@@ -1,0 +1,16 @@
+GITLAB_URL = "https://git.sandis.io"
+
+PROJECTS = {
+    "jaguarapp-front": {
+        "path": "/home/YOUR_USER/projekty/jaguarapp-front",
+        "namespace": "sandis/jaguarapp-front",
+    },
+    "claims-front": {
+        "path": "/home/YOUR_USER/projekty/claims-front",
+        "namespace": "sandis/claims-front",
+    },
+    "d2c-front": {
+        "path": "/home/YOUR_USER/projekty/d2c-front",
+        "namespace": "sandis/d2c-front",
+    },
+}
