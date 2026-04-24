@@ -70,10 +70,14 @@ def _print_header(project_name, flow):
     print(f'\n  {_B}release-helper{_X}  {project_name}  {arrow}\n')
 
 
-def _print_result(title, mr_url):
+def _print_result(title, mr_url, changelog):
     print(f'\n  {_G}{_B}✓ Done{_X}\n')
     print(f'    {_B}{title}{_X}')
     print(f'    {mr_url}\n')
+    print(f'  {_B}Changelog:{_X}')
+    for line in changelog.splitlines():
+        print(f'    {line}')
+    print()
 
 
 # ── Git utilities ──────────────────────────────────────────────────────────────
@@ -309,7 +313,7 @@ def run_sit_to_test(project_name):
         )
         step.label = "MR created"
 
-    _print_result(title, mr_url)
+    _print_result(title, mr_url, description)
     return mr_url
 
 
@@ -360,7 +364,7 @@ def run_test_to_master(project_name):
         )
         step.label = "MR created"
 
-    _print_result(title, mr_url)
+    _print_result(title, mr_url, description)
     return mr_url
 
 
