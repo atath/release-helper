@@ -303,8 +303,28 @@ def test_run_sit_to_test_aborts_on_no_new_feature_notes():
             release_helper.run_sit_to_test("jaguarapp-front")
 
 
+def test_has_content_diff_true():
+    with patch("release_helper.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=1)
+        result = release_helper.has_content_diff("/fake/path", "test", "master")
+    assert result is True
+    mock_run.assert_called_once_with(
+        ["git", "diff", "--quiet", "origin/master", "origin/test"],
+        cwd="/fake/path",
+        capture_output=True,
+    )
+
+
+def test_has_content_diff_false():
+    with patch("release_helper.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0)
+        result = release_helper.has_content_diff("/fake/path", "test", "master")
+    assert result is False
+
+
 def test_run_test_to_master_full_flow():
     with patch("release_helper.has_branch_diff", return_value=True), \
+         patch("release_helper.has_content_diff", return_value=True), \
          patch("release_helper.branch_exists_on_remote", return_value=False), \
          patch("release_helper.create_release_branch"), \
          patch("release_helper.run_clg", return_value=("2.9.8", "2.9.8 - 23.04.2026\n...")), \
@@ -327,8 +347,16 @@ def test_run_test_to_master_aborts_on_no_diff():
             release_helper.run_test_to_master("jaguarapp-front")
 
 
+def test_run_test_to_master_aborts_on_no_content_diff():
+    with patch("release_helper.has_branch_diff", return_value=True), \
+         patch("release_helper.has_content_diff", return_value=False):
+        with pytest.raises(SystemExit):
+            release_helper.run_test_to_master("jaguarapp-front")
+
+
 def test_run_test_to_master_uses_iterator_on_existing_branch():
     with patch("release_helper.has_branch_diff", return_value=True), \
+         patch("release_helper.has_content_diff", return_value=True), \
          patch("release_helper.find_available_branch_name", return_value="release/test-master-23042026-2") as mock_find, \
          patch("release_helper.create_release_branch"), \
          patch("release_helper.run_clg", return_value=("2.9.8", "content")), \

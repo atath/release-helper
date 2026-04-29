@@ -106,6 +106,15 @@ def has_branch_diff(project_path, source, target):
     return int(result.stdout.strip()) > 0
 
 
+def has_content_diff(project_path, source, target):
+    result = subprocess.run(
+        ["git", "diff", "--quiet", f"origin/{target}", f"origin/{source}"],
+        cwd=project_path,
+        capture_output=True,
+    )
+    return result.returncode != 0
+
+
 def find_available_branch_name(project_path, branch_name):
     if not branch_exists_on_remote(project_path, branch_name):
         return branch_name
@@ -332,6 +341,9 @@ def run_test_to_master(project_name):
     with _Step(f"Checking {source} → {target}") as step:
         if not has_branch_diff(path, source, target):
             step.label = f"No commits in {source} not in {target} — aborting"
+            sys.exit(1)
+        if not has_content_diff(path, source, target):
+            step.label = f"No file changes between {source} and {target} — aborting"
             sys.exit(1)
         step.label = f"{source} is ahead of {target}"
 
