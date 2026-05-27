@@ -71,7 +71,7 @@ def _print_header(project_name, flow):
 
 
 def _print_result(title, mr_url, changelog):
-    print(f'\n  {_G}{_B}✓ Done{_X}\n')
+    print(f'\n  {_G}{_B}✓ Gotowe{_X}\n')
     print(f'    {_B}{title}{_X}')
     print(f'    {mr_url}\n')
     print(f'  {_B}Changelog:{_X}')
@@ -278,41 +278,41 @@ def run_sit_to_test(project_name):
 
     _print_header(project_name, "sit-to-test")
 
-    with _Step("Fetching remote"):
+    with _Step("Pobieranie zmian z remote"):
         subprocess.run(["git", "fetch", "origin"], cwd=path,
                        check=True, capture_output=True)
 
-    with _Step(f"Checking {source} → {target}") as step:
+    with _Step(f"Sprawdzanie {source} → {target}") as step:
         if not has_branch_diff(path, source, target):
-            step.label = f"No commits in {source} not in {target} — aborting"
+            step.label = f"Brak commitów w {source} poza {target} — przerywam"
             sys.exit(1)
-        step.label = f"{source} is ahead of {target}"
+        step.label = f"{source} wyprzedza {target}"
 
     branch_name = make_branch_name("sit-to-test")
-    with _Step("Resolving branch name") as step:
+    with _Step("Wyznaczanie nazwy brancha") as step:
         branch_name = find_available_branch_name(path, branch_name)
         step.label = f"Branch → {branch_name}"
 
-    with _Step("Checking new FeatureNotes") as step:
+    with _Step("Sprawdzanie nowych FeatureNotes") as step:
         new_fn_files = get_new_feature_note_files(path)
         if not new_fn_files:
-            step.label = "Brak nowych FeatureNotes w sit vs test — aborting"
+            step.label = "Brak nowych FeatureNotes w sit vs test — przerywam"
             sys.exit(1)
         step.label = f"{len(new_fn_files)} nowych FeatureNotes"
 
-    with _Step(f"Creating branch {branch_name}"):
+    with _Step(f"Tworzenie brancha {branch_name}"):
         create_release_branch(path, source, branch_name)
 
-    with _Step("Collecting FeatureNotes") as step:
+    with _Step("Zbieranie FeatureNotes") as step:
         description = collect_feature_notes(path, only_files=new_fn_files)
-        step.label = "FeatureNotes collected"
+        step.label = "FeatureNotes zebrane"
 
-    with _Step("Pushing branch to origin"):
+    with _Step("Wysyłanie brancha do origin"):
         push_branch(path, branch_name)
 
     today = datetime.date.today().strftime("%d.%m.%Y")
     title = f"Release sit -> test {today}"
-    with _Step("Creating MR") as step:
+    with _Step("Tworzenie MR") as step:
         mr_url = create_gitlab_mr(
             namespace=namespace,
             source_branch=branch_name,
@@ -320,7 +320,7 @@ def run_sit_to_test(project_name):
             title=title,
             description=description,
         )
-        step.label = "MR created"
+        step.label = "MR utworzony"
 
     _print_result(title, mr_url, description)
     return mr_url
@@ -334,39 +334,39 @@ def run_test_to_master(project_name):
 
     _print_header(project_name, "test-to-master")
 
-    with _Step("Fetching remote"):
+    with _Step("Pobieranie zmian z remote"):
         subprocess.run(["git", "fetch", "origin"], cwd=path,
                        check=True, capture_output=True)
 
-    with _Step(f"Checking {source} → {target}") as step:
+    with _Step(f"Sprawdzanie {source} → {target}") as step:
         if not has_branch_diff(path, source, target):
-            step.label = f"No commits in {source} not in {target} — aborting"
+            step.label = f"Brak commitów w {source} poza {target} — przerywam"
             sys.exit(1)
         if not has_content_diff(path, source, target):
-            step.label = f"No file changes between {source} and {target} — aborting"
+            step.label = f"Brak różnic w plikach między {source} a {target} — przerywam"
             sys.exit(1)
-        step.label = f"{source} is ahead of {target}"
+        step.label = f"{source} wyprzedza {target}"
 
     branch_name = make_branch_name("test-to-master")
-    with _Step("Resolving branch name") as step:
+    with _Step("Wyznaczanie nazwy brancha") as step:
         branch_name = find_available_branch_name(path, branch_name)
         step.label = f"Branch → {branch_name}"
 
-    with _Step(f"Creating branch {branch_name}"):
+    with _Step(f"Tworzenie brancha {branch_name}"):
         create_release_branch(path, source, branch_name)
 
-    with _Step("Running CLG-fe.py") as step:
+    with _Step("Uruchamianie CLG-fe.py") as step:
         version, description = run_clg(path)
         step.label = f"CLG-fe.py → v{version}"
 
-    with _Step("Committing release notes"):
+    with _Step("Commitowanie release notes"):
         commit_release(path, version)
 
-    with _Step("Pushing branch to origin"):
+    with _Step("Wysyłanie brancha do origin"):
         push_branch(path, branch_name)
 
     title = f"Release test -> master v{version}"
-    with _Step("Creating MR") as step:
+    with _Step("Tworzenie MR") as step:
         mr_url = create_gitlab_mr(
             namespace=namespace,
             source_branch=branch_name,
@@ -374,7 +374,7 @@ def run_test_to_master(project_name):
             title=title,
             description=description,
         )
-        step.label = "MR created"
+        step.label = "MR utworzony"
 
     _print_result(title, mr_url, description)
     return mr_url
