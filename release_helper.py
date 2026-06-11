@@ -1,4 +1,5 @@
 import argparse
+import atexit
 import datetime
 import itertools
 import os
@@ -24,9 +25,19 @@ FLOW_CONFIG = {
 _G  = '\033[32m'   # green
 _Y  = '\033[33m'   # yellow
 _R  = '\033[31m'   # red
+_BL = '\033[34m'   # blue
 _B  = '\033[1m'    # bold
 _X  = '\033[0m'    # reset
 _CL = '\r\033[K'   # clear line
+
+_PROJECT_COLORS = {
+    "jaguarapp-front": _G,
+    "d2c-front":       _Y,
+    "claims-front":    _BL,
+}
+
+def _project_color(project_name):
+    return _PROJECT_COLORS.get(project_name, _B)
 
 
 class _Step:
@@ -70,14 +81,35 @@ def _print_header(project_name, flow):
     print(f'\n  {_B}release-helper{_X}  {project_name}  {arrow}\n')
 
 
-def _print_result(title, mr_url, changelog):
+def _print_no_changes(project_name, message):
+    color = _project_color(project_name)
+    sep = '─' * 60
+
+    def _deferred():
+        print(f'\n  {color}{_B}{sep}{_X}')
+        print(f"*{project_name.upper()}* {message}")
+        print(f'  {color}{_B}{sep}{_X}\n')
+
+    atexit.register(_deferred)
+
+
+def _print_result(project_name, title, mr_url, changelog):
+    color = _project_color(project_name)
+    display_title = title.replace(project_name, project_name.upper(), 1)
     print(f'\n  {_G}{_B}✓ Gotowe{_X}\n')
-    print(f'    {_B}{title}{_X}')
-    print(f'    {mr_url}\n')
-    print(f'  {_B}Changelog:{_X}')
-    for line in changelog.splitlines():
-        print(f'    {line}')
-    print()
+    sep = '─' * 60
+    print(f'  {color}{_B}{sep}{_X}')
+    slack_msg = (
+        f"*{display_title}*\n"
+        f"MR: {mr_url}\n"
+        f"\n"
+        f"Changelog:\n"
+        f"```\n"
+        f"{changelog}\n"
+        f"```"
+    )
+    print(slack_msg)
+    print(f'  {color}{_B}{sep}{_X}\n')
 
 
 # ── Git utilities ──────────────────────────────────────────────────────────────
@@ -285,6 +317,7 @@ def run_sit_to_test(project_name):
     with _Step(f"Sprawdzanie {source} → {target}") as step:
         if not has_branch_diff(path, source, target):
             step.label = f"Brak commitów w {source} poza {target} — przerywam"
+            _print_no_changes(project_name, f"Brak commitów w {source} poza {target}")
             sys.exit(1)
         step.label = f"{source} wyprzedza {target}"
 
@@ -297,6 +330,7 @@ def run_sit_to_test(project_name):
         new_fn_files = get_new_feature_note_files(path)
         if not new_fn_files:
             step.label = "Brak nowych FeatureNotes w sit vs test — przerywam"
+            _print_no_changes(project_name, "Brak nowych FeatureNotes w sit vs test")
             sys.exit(1)
         step.label = f"{len(new_fn_files)} nowych FeatureNotes"
 
@@ -311,7 +345,7 @@ def run_sit_to_test(project_name):
         push_branch(path, branch_name)
 
     today = datetime.date.today().strftime("%d.%m.%Y")
-    title = f"Release sit -> test {today}"
+    title = f"{project_name} Release sit -> test {today}"
     with _Step("Tworzenie MR") as step:
         mr_url = create_gitlab_mr(
             namespace=namespace,
@@ -322,7 +356,7 @@ def run_sit_to_test(project_name):
         )
         step.label = "MR utworzony"
 
-    _print_result(title, mr_url, description)
+    _print_result(project_name, title, mr_url, description)
     return mr_url
 
 
@@ -341,9 +375,11 @@ def run_test_to_master(project_name):
     with _Step(f"Sprawdzanie {source} → {target}") as step:
         if not has_branch_diff(path, source, target):
             step.label = f"Brak commitów w {source} poza {target} — przerywam"
+            _print_no_changes(project_name, f"Brak commitów w {source} poza {target}")
             sys.exit(1)
         if not has_content_diff(path, source, target):
             step.label = f"Brak różnic w plikach między {source} a {target} — przerywam"
+            _print_no_changes(project_name, f"Brak różnic w plikach między {source} a {target}")
             sys.exit(1)
         step.label = f"{source} wyprzedza {target}"
 
@@ -365,7 +401,7 @@ def run_test_to_master(project_name):
     with _Step("Wysyłanie brancha do origin"):
         push_branch(path, branch_name)
 
-    title = f"Release test -> master v{version}"
+    title = f"{project_name} Release test -> master v{version}"
     with _Step("Tworzenie MR") as step:
         mr_url = create_gitlab_mr(
             namespace=namespace,
@@ -376,7 +412,7 @@ def run_test_to_master(project_name):
         )
         step.label = "MR utworzony"
 
-    _print_result(title, mr_url, description)
+    _print_result(project_name, title, mr_url, description)
     return mr_url
 
 
