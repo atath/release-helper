@@ -345,19 +345,30 @@ def run_sit_to_test(project_name):
         push_branch(path, branch_name)
 
     today = datetime.date.today().strftime("%d.%m.%Y")
-    title = f"{project_name} Release sit -> test {today}"
-    with _Step("Tworzenie MR") as step:
-        mr_url = create_gitlab_mr(
+
+    with _Step("Tworzenie MR → test") as step:
+        mr_url_test = create_gitlab_mr(
             namespace=namespace,
             source_branch=branch_name,
-            target_branch=target,
-            title=title,
+            target_branch="test",
+            title=f"{project_name} Release sit -> test {today}",
             description=description,
         )
-        step.label = "MR utworzony"
+        step.label = "MR → test utworzony"
 
-    _print_result(project_name, title, mr_url, description)
-    return mr_url
+    with _Step("Tworzenie MR → sit") as step:
+        mr_url_sit = create_gitlab_mr(
+            namespace=namespace,
+            source_branch=branch_name,
+            target_branch="sit",
+            title=f"{project_name} Release sit -> sit {today}",
+            description=description,
+        )
+        step.label = "MR → sit utworzony"
+
+    title = f"{project_name} Release sit -> test {today}"
+    _print_result(project_name, title, mr_url_test, description)
+    return mr_url_test
 
 
 def run_test_to_master(project_name):
@@ -401,19 +412,39 @@ def run_test_to_master(project_name):
     with _Step("Wysyłanie brancha do origin"):
         push_branch(path, branch_name)
 
-    title = f"{project_name} Release test -> master v{version}"
-    with _Step("Tworzenie MR") as step:
-        mr_url = create_gitlab_mr(
+    with _Step("Tworzenie MR → master") as step:
+        mr_url_master = create_gitlab_mr(
             namespace=namespace,
             source_branch=branch_name,
-            target_branch=target,
-            title=title,
+            target_branch="master",
+            title=f"{project_name} Release test -> master v{version}",
             description=description,
         )
-        step.label = "MR utworzony"
+        step.label = "MR → master utworzony"
 
-    _print_result(project_name, title, mr_url, description)
-    return mr_url
+    with _Step("Tworzenie MR → test") as step:
+        create_gitlab_mr(
+            namespace=namespace,
+            source_branch=branch_name,
+            target_branch="test",
+            title=f"{project_name} Release test -> test v{version}",
+            description=description,
+        )
+        step.label = "MR → test utworzony"
+
+    with _Step("Tworzenie MR → sit") as step:
+        create_gitlab_mr(
+            namespace=namespace,
+            source_branch=branch_name,
+            target_branch="sit",
+            title=f"{project_name} Release test -> sit v{version}",
+            description=description,
+        )
+        step.label = "MR → sit utworzony"
+
+    title = f"{project_name} Release test -> master v{version}"
+    _print_result(project_name, title, mr_url_master, description)
+    return mr_url_master
 
 
 def main():
