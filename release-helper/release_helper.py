@@ -14,11 +14,14 @@ from config import GITLAB_URL, PROJECTS
 
 GITLAB_TOKEN_FILE = os.path.expanduser("~/.config/tokens/gitlab")
 
-FLOWS = ["sit-to-test", "test-to-master"]
+FLOWS = ["sit-to-test", "test-to-stage", "test-to-master"]
 
+# back_merge: gałęzie, do których po wydaniu wraca ten sam branch release,
+# żeby środowiska niższe nie odstawały od wyższych.
 FLOW_CONFIG = {
-    "sit-to-test":  {"source": "sit",  "target": "test"},
-    "test-to-master": {"source": "test", "target": "master"},
+    "sit-to-test":    {"source": "sit",  "target": "test",   "back_merge": ["sit"]},
+    "test-to-stage":  {"source": "test", "target": "stage",  "back_merge": ["test", "sit"]},
+    "test-to-master": {"source": "test", "target": "master", "back_merge": ["test", "sit"]},
 }
 
 # ── ANSI ──────────────────────────────────────────────────────────────────────
@@ -77,7 +80,8 @@ class _Step:
 
 
 def _print_header(project_name, flow):
-    arrow = 'sit → test' if flow == 'sit-to-test' else 'test → master'
+    cfg = FLOW_CONFIG[flow]
+    arrow = f"{cfg['source']} → {cfg['target']}"
     print(f'\n  {_B}release-helper{_X}  {project_name}  {arrow}\n')
 
 
@@ -114,11 +118,25 @@ def _print_result(project_name, title, mr_url, changelog):
 
 # ── Git utilities ──────────────────────────────────────────────────────────────
 
+def allowed_flows(project_name):
+    return PROJECTS[project_name].get("flows", FLOWS)
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Tworzy MR w GitLabie")
     parser.add_argument("--project", required=True, choices=PROJECTS.keys())
     parser.add_argument("--flow", required=True, choices=FLOWS)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+
+    # argparse nie potrafi uzależnić choices jednego argumentu od drugiego,
+    # więc dostępność flow per projekt sprawdzamy po sparsowaniu.
+    allowed = allowed_flows(args.project)
+    if args.flow not in allowed:
+        parser.error(
+            f"flow '{args.flow}' niedostępny dla {args.project} "
+            f"(dozwolone: {', '.join(allowed)})"
+        )
+    return args
 
 
 def make_branch_name(flow):
@@ -293,14 +311,49 @@ def create_gitlab_mr(namespace, source_branch, target_branch, title, description
         "remove_source_branch": False,
     }
 
-    response = requests.post(url, headers=headers, json=payload)
-    if not response.ok:
-        raise RuntimeError(f"GitLab API błąd {response.status_code}: {response.text}")
+    # GitLab rejestruje nowy branch po `git push` z niewielkim opóźnieniem
+    # (Sidekiq/Gitaly) — tuż po pushu MR call bywa szybszy niż ta rejestracja.
+    max_attempts = 5
+    for attempt in range(1, max_attempts + 1):
+        response = requests.post(url, headers=headers, json=payload)
+        if response.ok:
+            return response.json()["web_url"]
 
-    return response.json()["web_url"]
+        is_branch_not_registered_yet = (
+            response.status_code == 400
+            and "does not exist" in response.text
+            and "source_branch" in response.text
+        )
+        if is_branch_not_registered_yet and attempt < max_attempts:
+            time.sleep(attempt * 2)
+            continue
+
+        raise RuntimeError(f"GitLab API błąd {response.status_code}: {response.text}")
 
 
 # ── Flows ──────────────────────────────────────────────────────────────────────
+
+def _create_flow_mrs(project_name, namespace, branch_name, flow, label, description):
+    """MR do gałęzi docelowej + MRy back-merge. Zwraca URL MRa docelowego."""
+    cfg = FLOW_CONFIG[flow]
+    source = cfg["source"]
+    target_url = None
+
+    for target in [cfg["target"]] + cfg["back_merge"]:
+        with _Step(f"Tworzenie MR → {target}") as step:
+            url = create_gitlab_mr(
+                namespace=namespace,
+                source_branch=branch_name,
+                target_branch=target,
+                title=f"{project_name} Release {source} -> {target} {label}",
+                description=description,
+            )
+            step.label = f"MR → {target} utworzony"
+        if target_url is None:
+            target_url = url
+
+    return target_url
+
 
 def run_sit_to_test(project_name):
     project = PROJECTS[project_name]
@@ -329,8 +382,8 @@ def run_sit_to_test(project_name):
     with _Step("Sprawdzanie nowych FeatureNotes") as step:
         new_fn_files = get_new_feature_note_files(path)
         if not new_fn_files:
-            step.label = "Brak nowych FeatureNotes w sit vs test — przerywam"
-            _print_no_changes(project_name, "Brak nowych FeatureNotes w sit vs test")
+            step.label = f"Brak nowych zmian w {source} vs {target} — przerywam"
+            _print_no_changes(project_name, f"Brak nowych zmian w {source} vs {target}")
             sys.exit(1)
         step.label = f"{len(new_fn_files)} nowych FeatureNotes"
 
@@ -346,38 +399,24 @@ def run_sit_to_test(project_name):
 
     today = datetime.date.today().strftime("%d.%m.%Y")
 
-    with _Step("Tworzenie MR → test") as step:
-        mr_url_test = create_gitlab_mr(
-            namespace=namespace,
-            source_branch=branch_name,
-            target_branch="test",
-            title=f"{project_name} Release sit -> test {today}",
-            description=description,
-        )
-        step.label = "MR → test utworzony"
-
-    with _Step("Tworzenie MR → sit") as step:
-        mr_url_sit = create_gitlab_mr(
-            namespace=namespace,
-            source_branch=branch_name,
-            target_branch="sit",
-            title=f"{project_name} Release sit -> sit {today}",
-            description=description,
-        )
-        step.label = "MR → sit utworzony"
+    mr_url_test = _create_flow_mrs(
+        project_name, namespace, branch_name, "sit-to-test", today, description
+    )
 
     title = f"{project_name} Release sit -> test {today}"
     _print_result(project_name, title, mr_url_test, description)
     return mr_url_test
 
 
-def run_test_to_master(project_name):
+def run_clg_flow(project_name, flow):
+    """Przepływ oparty o CLG-fe.py: bump wersji, RelNote, MR + back-merge."""
     project = PROJECTS[project_name]
     path = project["path"]
     namespace = project["namespace"]
-    source, target = "test", "master"
+    cfg = FLOW_CONFIG[flow]
+    source, target = cfg["source"], cfg["target"]
 
-    _print_header(project_name, "test-to-master")
+    _print_header(project_name, flow)
 
     with _Step("Pobieranie zmian z remote"):
         subprocess.run(["git", "fetch", "origin"], cwd=path,
@@ -389,12 +428,12 @@ def run_test_to_master(project_name):
             _print_no_changes(project_name, f"Brak commitów w {source} poza {target}")
             sys.exit(1)
         if not has_content_diff(path, source, target):
-            step.label = f"Brak różnic w plikach między {source} a {target} — przerywam"
-            _print_no_changes(project_name, f"Brak różnic w plikach między {source} a {target}")
+            step.label = f"Brak nowych zmian w {source} vs {target} — przerywam"
+            _print_no_changes(project_name, f"Brak nowych zmian w {source} vs {target}")
             sys.exit(1)
         step.label = f"{source} wyprzedza {target}"
 
-    branch_name = make_branch_name("test-to-master")
+    branch_name = make_branch_name(flow)
     with _Step("Wyznaczanie nazwy brancha") as step:
         branch_name = find_available_branch_name(path, branch_name)
         step.label = f"Branch → {branch_name}"
@@ -412,47 +451,29 @@ def run_test_to_master(project_name):
     with _Step("Wysyłanie brancha do origin"):
         push_branch(path, branch_name)
 
-    with _Step("Tworzenie MR → master") as step:
-        mr_url_master = create_gitlab_mr(
-            namespace=namespace,
-            source_branch=branch_name,
-            target_branch="master",
-            title=f"{project_name} Release test -> master v{version}",
-            description=description,
-        )
-        step.label = "MR → master utworzony"
+    mr_url_target = _create_flow_mrs(
+        project_name, namespace, branch_name, flow, f"v{version}", description
+    )
 
-    with _Step("Tworzenie MR → test") as step:
-        create_gitlab_mr(
-            namespace=namespace,
-            source_branch=branch_name,
-            target_branch="test",
-            title=f"{project_name} Release test -> test v{version}",
-            description=description,
-        )
-        step.label = "MR → test utworzony"
+    title = f"{project_name} Release {source} -> {target} v{version}"
+    _print_result(project_name, title, mr_url_target, description)
+    return mr_url_target
 
-    with _Step("Tworzenie MR → sit") as step:
-        create_gitlab_mr(
-            namespace=namespace,
-            source_branch=branch_name,
-            target_branch="sit",
-            title=f"{project_name} Release test -> sit v{version}",
-            description=description,
-        )
-        step.label = "MR → sit utworzony"
 
-    title = f"{project_name} Release test -> master v{version}"
-    _print_result(project_name, title, mr_url_master, description)
-    return mr_url_master
+def run_test_to_stage(project_name):
+    return run_clg_flow(project_name, "test-to-stage")
+
+
+def run_test_to_master(project_name):
+    return run_clg_flow(project_name, "test-to-master")
 
 
 def main():
     args = parse_args()
     if args.flow == "sit-to-test":
         run_sit_to_test(args.project)
-    elif args.flow == "test-to-master":
-        run_test_to_master(args.project)
+    else:
+        run_clg_flow(args.project, args.flow)
 
 
 if __name__ == "__main__":

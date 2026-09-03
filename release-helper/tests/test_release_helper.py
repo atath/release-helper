@@ -267,10 +267,9 @@ def test_run_sit_to_test_full_flow():
         url = release_helper.run_sit_to_test("jaguarapp-front")
 
     assert url == "https://git.sandis.io/mr/1"
-    mock_mr.assert_called_once()
-    call_kwargs = mock_mr.call_args[1] if mock_mr.call_args[1] else {}
-    call_args = mock_mr.call_args[0]
-    title = call_kwargs.get("title") or call_args[3]
+    targets = [c[1]["target_branch"] for c in mock_mr.call_args_list]
+    assert targets == ["test", "sit"]
+    title = mock_mr.call_args_list[0][1]["title"]
     assert "sit -> test" in title
     assert "23.04.2026" in title
 
@@ -334,9 +333,9 @@ def test_run_test_to_master_full_flow():
         url = release_helper.run_test_to_master("jaguarapp-front")
 
     assert url == "https://git.sandis.io/mr/2"
-    call_args = mock_mr.call_args[0]
-    call_kwargs = mock_mr.call_args[1] if mock_mr.call_args[1] else {}
-    title = call_kwargs.get("title") or call_args[3]
+    targets = [c[1]["target_branch"] for c in mock_mr.call_args_list]
+    assert targets == ["master", "test", "sit"]
+    title = mock_mr.call_args_list[0][1]["title"]
     assert "test -> master" in title
     assert "v2.9.8" in title
 
@@ -365,3 +364,109 @@ def test_run_test_to_master_uses_iterator_on_existing_branch():
          patch("release_helper.create_gitlab_mr", return_value="https://git.sandis.io/mr/2"):
         release_helper.run_test_to_master("jaguarapp-front")
     mock_find.assert_called_once()
+
+
+# ── test-to-stage ──────────────────────────────────────────────────────────────
+
+def test_make_branch_name_test_to_stage():
+    with patch("release_helper.datetime") as mock_dt:
+        mock_dt.date.today.return_value.strftime.return_value = "23042026"
+        result = release_helper.make_branch_name("test-to-stage")
+    assert result == "release/test-stage-23042026"
+
+
+def test_allowed_flows_reads_project_config():
+    assert release_helper.allowed_flows("claims-front") == ["sit-to-test", "test-to-stage"]
+    assert release_helper.allowed_flows("jaguarapp-front") == ["sit-to-test", "test-to-master"]
+
+
+def test_allowed_flows_falls_back_to_all_flows():
+    with patch.dict(release_helper.PROJECTS, {"legacy": {"path": "/x", "namespace": "n"}}):
+        assert release_helper.allowed_flows("legacy") == release_helper.FLOWS
+
+
+def test_parse_args_accepts_test_to_stage_for_claims_front():
+    args = release_helper.parse_args(["--project", "claims-front", "--flow", "test-to-stage"])
+    assert args.flow == "test-to-stage"
+
+
+def test_parse_args_rejects_test_to_master_for_claims_front():
+    with pytest.raises(SystemExit):
+        release_helper.parse_args(["--project", "claims-front", "--flow", "test-to-master"])
+
+
+def test_parse_args_rejects_test_to_stage_for_jaguarapp_front():
+    with pytest.raises(SystemExit):
+        release_helper.parse_args(["--project", "jaguarapp-front", "--flow", "test-to-stage"])
+
+
+def test_run_test_to_stage_full_flow():
+    with patch("release_helper.subprocess.run"), \
+         patch("release_helper.has_branch_diff", return_value=True), \
+         patch("release_helper.has_content_diff", return_value=True), \
+         patch("release_helper.branch_exists_on_remote", return_value=False), \
+         patch("release_helper.create_release_branch"), \
+         patch("release_helper.run_clg", return_value=("0.2.0", "0.2.0 - 23.04.2026\n...")), \
+         patch("release_helper.commit_release"), \
+         patch("release_helper.push_branch"), \
+         patch("release_helper.create_gitlab_mr", return_value="https://git.sandis.io/mr/3") as mock_mr:
+        url = release_helper.run_test_to_stage("claims-front")
+
+    assert url == "https://git.sandis.io/mr/3"
+    targets = [c[1]["target_branch"] for c in mock_mr.call_args_list]
+    assert targets == ["stage", "test", "sit"]
+    titles = [c[1]["title"] for c in mock_mr.call_args_list]
+    assert titles[0] == "claims-front Release test -> stage v0.2.0"
+    assert titles[1] == "claims-front Release test -> test v0.2.0"
+    assert titles[2] == "claims-front Release test -> sit v0.2.0"
+
+
+def test_run_test_to_stage_branches_off_test():
+    with patch("release_helper.subprocess.run"), \
+         patch("release_helper.has_branch_diff", return_value=True) as mock_diff, \
+         patch("release_helper.has_content_diff", return_value=True), \
+         patch("release_helper.branch_exists_on_remote", return_value=False), \
+         patch("release_helper.create_release_branch") as mock_create, \
+         patch("release_helper.run_clg", return_value=("0.2.0", "content")), \
+         patch("release_helper.commit_release"), \
+         patch("release_helper.push_branch"), \
+         patch("release_helper.create_gitlab_mr", return_value="https://git.sandis.io/mr/3"):
+        release_helper.run_test_to_stage("claims-front")
+
+    assert mock_diff.call_args[0][1:] == ("test", "stage")
+    assert mock_create.call_args[0][1] == "test"
+
+
+def test_run_test_to_stage_aborts_on_no_diff():
+    with patch("release_helper.subprocess.run"), \
+         patch("release_helper.has_branch_diff", return_value=False):
+        with pytest.raises(SystemExit):
+            release_helper.run_test_to_stage("claims-front")
+
+
+def test_run_test_to_stage_aborts_on_no_content_diff():
+    with patch("release_helper.subprocess.run"), \
+         patch("release_helper.has_branch_diff", return_value=True), \
+         patch("release_helper.has_content_diff", return_value=False):
+        with pytest.raises(SystemExit):
+            release_helper.run_test_to_stage("claims-front")
+
+
+def test_run_test_to_stage_uses_iterator_on_existing_branch():
+    with patch("release_helper.subprocess.run"), \
+         patch("release_helper.has_branch_diff", return_value=True), \
+         patch("release_helper.has_content_diff", return_value=True), \
+         patch("release_helper.find_available_branch_name",
+               return_value="release/test-stage-23042026-2") as mock_find, \
+         patch("release_helper.create_release_branch"), \
+         patch("release_helper.run_clg", return_value=("0.2.0", "content")), \
+         patch("release_helper.commit_release"), \
+         patch("release_helper.push_branch"), \
+         patch("release_helper.create_gitlab_mr", return_value="https://git.sandis.io/mr/3"):
+        release_helper.run_test_to_stage("claims-front")
+    mock_find.assert_called_once()
+
+
+def test_print_header_derives_arrow_from_flow_config(capsys):
+    release_helper._print_header("claims-front", "test-to-stage")
+    assert "test → stage" in capsys.readouterr().out

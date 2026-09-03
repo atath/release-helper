@@ -1,7 +1,7 @@
 # release-helper
 
 Skrypt Pythona do automatycznego tworzenia Merge Requestów w GitLabie dla projektów frontendowych.
-Obsługuje dwa przepływy: `sit → test` oraz `test → master`.
+Obsługuje trzy przepływy: `sit → test`, `test → stage` oraz `test → master`.
 
 ## Wymagania
 
@@ -50,6 +50,9 @@ PROJECTS = {
 
 `config.py` jest w `.gitignore` — Twoje ścieżki nie trafią do repozytorium.
 
+Klucz `flows` ogranicza dostępne przepływy do tych, które projekt realnie wspiera.
+Pominięcie klucza oznacza „wszystkie przepływy".
+
 ## Użycie
 
 ```bash
@@ -57,13 +60,31 @@ python release_helper.py --project <projekt> --flow <przepływ>
 ```
 
 **Projekty:** `jaguarapp-front`, `claims-front`, `d2c-front`  
-**Przepływy:** `sit-to-test`, `test-to-master`
+**Przepływy:** `sit-to-test`, `test-to-stage`, `test-to-master`
+
+Nie każdy przepływ działa w każdym projekcie — progresja gałęzi się różni:
+
+| Projekt | Progresja gałęzi | Dostępne przepływy |
+|---|---|---|
+| `jaguarapp-front` | sit → test → master | `sit-to-test`, `test-to-master` |
+| `d2c-front` | sit → test → master | `sit-to-test`, `test-to-master` |
+| `claims-front` | sit → test → stage → master | `sit-to-test`, `test-to-stage` |
+
+W claims-front krok `stage → master` robisz ręcznie w GitLabie — skrypt go nie obsługuje.
+
+Wywołanie niedozwolonego przepływu kończy się błędem:
+
+```
+release_helper.py: error: flow 'test-to-master' niedostępny dla claims-front
+(dozwolone: sit-to-test, test-to-stage)
+```
 
 ### Przykłady
 
 ```bash
 python release_helper.py --project jaguarapp-front --flow sit-to-test
 python release_helper.py --project jaguarapp-front --flow test-to-master
+python release_helper.py --project claims-front --flow test-to-stage
 ```
 
 ## Przepływy
@@ -86,6 +107,19 @@ python release_helper.py --project jaguarapp-front --flow test-to-master
 4. Commituje wynik, pushuje branch i tworzy MR w GitLabie
 
 **Tytuł MRa:** `Release test -> master vX.Y.Z`
+
+Skrypt tworzy też MRy back-merge do `test` i `sit`, żeby niższe środowiska nie odstawały.
+
+### test → stage
+
+Tylko `claims-front`. Przebieg identyczny jak `test → master`, inna gałąź docelowa:
+
+1. Sprawdza czy `test` ma commity i realne zmiany względem `stage` (jeśli nie — abort)
+2. Tworzy branch `release/test-stage-DDMMYYYY` (lub `-2`, `-3` jeśli już istnieje)
+3. Uruchamia `CLG-fe.py` — scala FeatureNotes w RelNote, bumps `package.json`
+4. Commituje wynik, pushuje branch i tworzy MRy do `stage`, `test` i `sit`
+
+**Tytuł MRa:** `Release test -> stage vX.Y.Z`
 
 ## Format FeatureNotes
 
