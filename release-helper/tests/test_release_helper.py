@@ -4,7 +4,7 @@ import tempfile
 import os
 from unittest.mock import patch, MagicMock
 
-sys.path.insert(0, "/home/atath/scripts")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import release_helper
 
 
