@@ -17,9 +17,11 @@ GITLAB_TOKEN_FILE = os.path.expanduser("~/.config/tokens/gitlab")
 FLOWS = ["sit-to-test", "test-to-stage", "test-to-master"]
 
 # back_merge: gałęzie, do których po wydaniu wraca ten sam branch release,
-# żeby środowiska niższe nie odstawały od wyższych.
+# żeby środowiska niższe nie odstawały od wyższych. Pusta lista przy
+# sit-to-test: ten przepływ nie dokłada commita, więc branch release jest
+# kopią sit, a MR back-merge nie miałby czego wnieść.
 FLOW_CONFIG = {
-    "sit-to-test":    {"source": "sit",  "target": "test",   "back_merge": ["sit"]},
+    "sit-to-test":    {"source": "sit",  "target": "test",   "back_merge": []},
     "test-to-stage":  {"source": "test", "target": "stage",  "back_merge": ["test", "sit"]},
     "test-to-master": {"source": "test", "target": "master", "back_merge": ["test", "sit"]},
 }

@@ -268,7 +268,7 @@ def test_run_sit_to_test_full_flow():
 
     assert url == "https://git.sandis.io/mr/1"
     targets = [c[1]["target_branch"] for c in mock_mr.call_args_list]
-    assert targets == ["test", "sit"]
+    assert targets == ["test"]
     title = mock_mr.call_args_list[0][1]["title"]
     assert "sit -> test" in title
     assert "23.04.2026" in title
