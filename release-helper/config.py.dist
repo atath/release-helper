@@ -19,4 +19,12 @@ PROJECTS = {
         "namespace": "sandis/d2c-front",
         "flows": ["sit-to-test", "test-to-master"],
     },
+    "pelicanapp": {
+        "path": "/home/YOUR_USER/projekty/pelicanapp",
+        "namespace": "sandis/pelicanapp",
+        # Statyczny CHANGELOG.md bumpowany na branchu feature — skrypt go tylko
+        # czyta, nie tworzy brancha release ani MR-ów back-merge.
+        "changelog": "static",
+        "flows": ["sit-to-test", "test-to-master"],
+    },
 }

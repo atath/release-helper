@@ -470,3 +470,263 @@ def test_run_test_to_stage_uses_iterator_on_existing_branch():
 def test_print_header_derives_arrow_from_flow_config(capsys):
     release_helper._print_header("claims-front", "test-to-stage")
     assert "test → stage" in capsys.readouterr().out
+
+
+# ── pelicanapp: statyczny CHANGELOG.md ─────────────────────────────────────────
+
+_CHANGELOG_TEST = """CHANGELOG - PelicanApp
+====================
+
+0.22.0 - 17.06.2025
+===================
+
+### [Dodano]
+
+- SAN-16560: blokowanie użytkownika
+
+0.21.0 - 20.05.2025
+===================
+
+### [Dodano]
+
+- SAN-15724: zapisywanie minipolis
+"""
+
+# W sit ta sama sekcja bywa przenumerowana (0.22.0 → 0.23.0), a pod nią ląduje
+# nowa sekcja z innym numerem — dlatego porównujemy wpisy, nie numery wersji.
+_CHANGELOG_SIT = """CHANGELOG - PelicanApp
+====================
+
+0.23.0 - 17.06.2025
+===================
+
+### [Dodano]
+
+- SAN-16560: blokowanie użytkownika
+
+0.22.0 - 13.06.2025
+===================
+
+### [Zmieniono]
+
+- SAN-15863: aktualizacja wersji PHP
+
+0.21.0 - 20.05.2025
+===================
+
+### [Dodano]
+
+- SAN-15724: zapisywanie minipolis
+"""
+
+
+def _static_changelog_mocks(source_text=_CHANGELOG_SIT, target_text=_CHANGELOG_TEST, version="0.23.0\n"):
+    return [
+        MagicMock(stdout=source_text),
+        MagicMock(stdout=target_text),
+        MagicMock(stdout=version),
+    ]
+
+
+def test_collect_static_changelog_returns_only_new_entries():
+    with patch("release_helper.subprocess.run") as mock_run:
+        mock_run.side_effect = _static_changelog_mocks()
+        version, changelog = release_helper.collect_static_changelog("/fake/path", "sit", "test")
+
+    assert version == "0.23.0"
+    assert changelog == "### [Zmieniono]\n\n- SAN-15863: aktualizacja wersji PHP"
+
+
+def test_collect_static_changelog_ignores_version_renumbering():
+    with patch("release_helper.subprocess.run") as mock_run:
+        mock_run.side_effect = _static_changelog_mocks()
+        _, changelog = release_helper.collect_static_changelog("/fake/path", "sit", "test")
+
+    assert "0.23.0" not in changelog
+    assert "0.22.0" not in changelog
+    assert "SAN-16560" not in changelog
+
+
+def test_collect_static_changelog_groups_entries_by_category():
+    source = _CHANGELOG_SIT.replace(
+        "- SAN-15863: aktualizacja wersji PHP",
+        "- SAN-15863: aktualizacja wersji PHP\n- SAN-15999: zmiana limitu",
+    ).replace(
+        "- SAN-16560: blokowanie użytkownika",
+        "- SAN-16560: blokowanie użytkownika\n- SAN-17000: nowy raport",
+    )
+    with patch("release_helper.subprocess.run") as mock_run:
+        mock_run.side_effect = _static_changelog_mocks(source_text=source)
+        _, changelog = release_helper.collect_static_changelog("/fake/path", "sit", "test")
+
+    assert changelog == (
+        "### [Dodano]\n"
+        "\n"
+        "- SAN-17000: nowy raport\n"
+        "\n"
+        "### [Zmieniono]\n"
+        "\n"
+        "- SAN-15863: aktualizacja wersji PHP\n"
+        "- SAN-15999: zmiana limitu"
+    )
+
+
+def test_collect_static_changelog_reads_from_both_branches_and_version_file():
+    with patch("release_helper.subprocess.run") as mock_run:
+        mock_run.side_effect = _static_changelog_mocks()
+        release_helper.collect_static_changelog("/fake/path", "sit", "test")
+
+    commands = [call[0][0] for call in mock_run.call_args_list]
+    assert commands == [
+        ["git", "show", "origin/sit:CHANGELOG.md"],
+        ["git", "show", "origin/test:CHANGELOG.md"],
+        ["git", "show", "origin/sit:VERSION"],
+    ]
+
+
+def test_collect_static_changelog_raises_when_no_new_entries():
+    with patch("release_helper.subprocess.run") as mock_run:
+        mock_run.side_effect = _static_changelog_mocks(source_text=_CHANGELOG_TEST)
+        with pytest.raises(ValueError, match="CHANGELOG.md"):
+            release_helper.collect_static_changelog("/fake/path", "sit", "test")
+
+
+def test_run_static_flow_creates_single_mr_from_source_branch():
+    with patch("release_helper.has_branch_diff", return_value=True), \
+         patch("release_helper.has_content_diff", return_value=True), \
+         patch("release_helper.collect_static_changelog", return_value=("0.23.0", "- SAN-17000: nowa funkcja")), \
+         patch("release_helper.subprocess.run"), \
+         patch("release_helper.create_gitlab_mr", return_value="https://git.sandis.io/mr/7") as mock_mr:
+        url = release_helper.run_static_flow("pelicanapp", "sit-to-test")
+
+    assert url == "https://git.sandis.io/mr/7"
+    assert mock_mr.call_count == 1
+    kwargs = mock_mr.call_args_list[0][1]
+    assert kwargs["source_branch"] == "sit"
+    assert kwargs["target_branch"] == "test"
+    assert kwargs["namespace"] == "sandis/pelicanapp"
+    assert "sit -> test" in kwargs["title"]
+    assert "v0.23.0" in kwargs["title"]
+    assert kwargs["description"] == "- SAN-17000: nowa funkcja"
+
+
+def test_run_static_flow_does_not_touch_release_branch():
+    with patch("release_helper.has_branch_diff", return_value=True), \
+         patch("release_helper.has_content_diff", return_value=True), \
+         patch("release_helper.collect_static_changelog", return_value=("0.23.0", "changelog")), \
+         patch("release_helper.subprocess.run"), \
+         patch("release_helper.create_release_branch") as mock_branch, \
+         patch("release_helper.push_branch") as mock_push, \
+         patch("release_helper.commit_release") as mock_commit, \
+         patch("release_helper.create_gitlab_mr", return_value="https://git.sandis.io/mr/7"):
+        release_helper.run_static_flow("pelicanapp", "sit-to-test")
+
+    mock_branch.assert_not_called()
+    mock_push.assert_not_called()
+    mock_commit.assert_not_called()
+
+
+def test_run_static_flow_targets_master():
+    with patch("release_helper.has_branch_diff", return_value=True), \
+         patch("release_helper.has_content_diff", return_value=True), \
+         patch("release_helper.collect_static_changelog", return_value=("0.23.0", "changelog")), \
+         patch("release_helper.subprocess.run"), \
+         patch("release_helper.create_gitlab_mr", return_value="https://git.sandis.io/mr/8") as mock_mr:
+        release_helper.run_static_flow("pelicanapp", "test-to-master")
+
+    kwargs = mock_mr.call_args_list[0][1]
+    assert kwargs["source_branch"] == "test"
+    assert kwargs["target_branch"] == "master"
+
+
+def test_run_static_flow_aborts_on_no_diff():
+    with patch("release_helper.has_branch_diff", return_value=False), \
+         patch("release_helper.subprocess.run"):
+        with pytest.raises(SystemExit):
+            release_helper.run_static_flow("pelicanapp", "sit-to-test")
+
+
+def test_run_static_flow_aborts_on_no_content_diff():
+    with patch("release_helper.has_branch_diff", return_value=True), \
+         patch("release_helper.has_content_diff", return_value=False), \
+         patch("release_helper.subprocess.run"):
+        with pytest.raises(SystemExit):
+            release_helper.run_static_flow("pelicanapp", "sit-to-test")
+
+
+def test_run_static_flow_aborts_on_untouched_changelog():
+    with patch("release_helper.has_branch_diff", return_value=True), \
+         patch("release_helper.has_content_diff", return_value=True), \
+         patch("release_helper.collect_static_changelog", side_effect=ValueError("CHANGELOG.md")), \
+         patch("release_helper.subprocess.run"), \
+         patch("release_helper.create_gitlab_mr") as mock_mr:
+        with pytest.raises(SystemExit):
+            release_helper.run_static_flow("pelicanapp", "sit-to-test")
+    mock_mr.assert_not_called()
+
+
+def test_run_static_flow_reuses_existing_mr():
+    existing = release_helper.MergeRequestExistsError("https://git.sandis.io/mr/5")
+    with patch("release_helper.has_branch_diff", return_value=True), \
+         patch("release_helper.has_content_diff", return_value=True), \
+         patch("release_helper.collect_static_changelog", return_value=("0.23.0", "changelog")), \
+         patch("release_helper.subprocess.run"), \
+         patch("release_helper.create_gitlab_mr", side_effect=existing):
+        url = release_helper.run_static_flow("pelicanapp", "sit-to-test")
+
+    assert url == "https://git.sandis.io/mr/5"
+
+
+def test_create_gitlab_mr_raises_merge_request_exists_on_409():
+    mock_response = MagicMock()
+    mock_response.ok = False
+    mock_response.status_code = 409
+    mock_response.text = (
+        '{"message":["Another open merge request already exists for this source branch: !123"]}'
+    )
+
+    with patch("release_helper.requests.post", return_value=mock_response):
+        with patch.dict(os.environ, {"GITLAB_TOKEN": "test-token"}):
+            with pytest.raises(release_helper.MergeRequestExistsError) as exc:
+                release_helper.create_gitlab_mr("sandis/pelicanapp", "sit", "test", "title", "desc")
+
+    assert exc.value.url == "https://git.sandis.io/sandis/pelicanapp/-/merge_requests/123"
+
+
+def test_create_gitlab_mr_raises_runtime_error_on_409_without_iid():
+    mock_response = MagicMock()
+    mock_response.ok = False
+    mock_response.status_code = 409
+    mock_response.text = '{"message":["Conflict"]}'
+
+    with patch("release_helper.requests.post", return_value=mock_response):
+        with patch.dict(os.environ, {"GITLAB_TOKEN": "test-token"}):
+            with pytest.raises(RuntimeError, match="409"):
+                release_helper.create_gitlab_mr("sandis/pelicanapp", "sit", "test", "title", "desc")
+
+
+def test_changelog_strategy_reads_project_config():
+    assert release_helper.changelog_strategy("pelicanapp") == "static"
+    assert release_helper.changelog_strategy("jaguarapp-front") is None
+
+
+def test_main_dispatches_static_flow_for_pelicanapp():
+    with patch("release_helper.run_static_flow") as mock_static, \
+         patch("release_helper.run_sit_to_test") as mock_sit, \
+         patch("release_helper.run_clg_flow") as mock_clg, \
+         patch.object(sys, "argv", ["release_helper.py", "--project", "pelicanapp", "--flow", "sit-to-test"]):
+        release_helper.main()
+
+    mock_static.assert_called_once_with("pelicanapp", "sit-to-test")
+    mock_sit.assert_not_called()
+    mock_clg.assert_not_called()
+
+
+def test_main_keeps_featurenotes_flow_for_jaguarapp_front():
+    with patch("release_helper.run_static_flow") as mock_static, \
+         patch("release_helper.run_sit_to_test") as mock_sit, \
+         patch.object(sys, "argv", ["release_helper.py", "--project", "jaguarapp-front", "--flow", "sit-to-test"]):
+        release_helper.main()
+
+    mock_sit.assert_called_once_with("jaguarapp-front")
+    mock_static.assert_not_called()

@@ -1,6 +1,6 @@
 # release-helper
 
-Skrypt Pythona do automatycznego tworzenia Merge Requestów w GitLabie dla projektów frontendowych.
+Skrypt Pythona do automatycznego tworzenia Merge Requestów w GitLabie dla projektów Sandis.
 Obsługuje trzy przepływy: `sit → test`, `test → stage` oraz `test → master`.
 
 ## Wymagania
@@ -59,7 +59,7 @@ Pominięcie klucza oznacza „wszystkie przepływy".
 python release_helper.py --project <projekt> --flow <przepływ>
 ```
 
-**Projekty:** `jaguarapp-front`, `claims-front`, `d2c-front`  
+**Projekty:** `jaguarapp-front`, `claims-front`, `d2c-front`, `pelicanapp`  
 **Przepływy:** `sit-to-test`, `test-to-stage`, `test-to-master`
 
 Nie każdy przepływ działa w każdym projekcie — progresja gałęzi się różni:
@@ -69,8 +69,11 @@ Nie każdy przepływ działa w każdym projekcie — progresja gałęzi się ró
 | `jaguarapp-front` | sit → test → master | `sit-to-test`, `test-to-master` |
 | `d2c-front` | sit → test → master | `sit-to-test`, `test-to-master` |
 | `claims-front` | sit → test → stage → master | `sit-to-test`, `test-to-stage` |
+| `pelicanapp` | develop → sit → test → master | `sit-to-test`, `test-to-master` |
 
 W claims-front krok `stage → master` robisz ręcznie w GitLabie — skrypt go nie obsługuje.
+
+`pelicanapp` działa inaczej niż projekty frontendowe — patrz [Statyczny CHANGELOG.md](#statyczny-changelogmd).
 
 Wywołanie niedozwolonego przepływu kończy się błędem:
 
@@ -85,6 +88,7 @@ release_helper.py: error: flow 'test-to-master' niedostępny dla claims-front
 python release_helper.py --project jaguarapp-front --flow sit-to-test
 python release_helper.py --project jaguarapp-front --flow test-to-master
 python release_helper.py --project claims-front --flow test-to-stage
+python release_helper.py --project pelicanapp --flow test-to-master
 ```
 
 ## Przepływy
@@ -120,6 +124,32 @@ Tylko `claims-front`. Przebieg identyczny jak `test → master`, inna gałąź d
 4. Commituje wynik, pushuje branch i tworzy MRy do `stage`, `test` i `sit`
 
 **Tytuł MRa:** `Release test -> stage vX.Y.Z`
+
+## Statyczny CHANGELOG.md
+
+Dotyczy projektów z kluczem `"changelog": "static"` w konfiguracji — dziś tylko `pelicanapp`.
+
+Te repozytoria nie mają `FeatureNotes/` ani `CLG-fe.py`. Numer wersji (`VERSION`) i wpis
+w `CHANGELOG.md` dopisuje deweloper na branchu feature, więc do momentu release'u wszystko
+jest już w gałęzi źródłowej. Skrypt niczego nie generuje i nie commituje — tylko czyta.
+
+Przebieg:
+
+1. Sprawdza czy gałąź źródłowa ma commity i realne zmiany względem docelowej (jeśli nie — abort)
+2. Wyciąga z `CHANGELOG.md` wpisy obecne w gałęzi źródłowej, a nieobecne w docelowej
+3. Czyta wersję z pliku `VERSION` gałęzi źródłowej
+4. Tworzy jeden MR **prosto z gałęzi źródłowej** do docelowej
+
+**Tytuł MRa:** `pelicanapp Release test -> master vX.Y.Z`
+
+Nie powstaje branch `release/...` ani MRy back-merge — bez commita release'owego branch
+byłby kopią źródła, a back-merge nie miałby czego wnieść.
+
+Porównywane są **treści wpisów**, nie numery wersji: przy wydaniu ta sama sekcja bywa
+przenumerowana (`0.22.0` → `0.23.0`), więc numer nie identyfikuje zmian.
+
+Ponowne uruchomienie na tej samej parze gałęzi nie wywala się — skrypt wykrywa otwarty
+już MR (HTTP 409) i zwraca jego adres.
 
 ## Format FeatureNotes
 

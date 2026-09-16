@@ -29,6 +29,7 @@ _G  = '\033[32m'   # green
 _Y  = '\033[33m'   # yellow
 _R  = '\033[31m'   # red
 _BL = '\033[34m'   # blue
+_M  = '\033[35m'   # magenta
 _B  = '\033[1m'    # bold
 _X  = '\033[0m'    # reset
 _CL = '\r\033[K'   # clear line
@@ -37,6 +38,7 @@ _PROJECT_COLORS = {
     "jaguarapp-front": _G,
     "d2c-front":       _Y,
     "claims-front":    _BL,
+    "pelicanapp":      _M,
 }
 
 def _project_color(project_name):
@@ -120,6 +122,11 @@ def _print_result(project_name, title, mr_url, changelog):
 
 def allowed_flows(project_name):
     return PROJECTS[project_name].get("flows", FLOWS)
+
+
+def changelog_strategy(project_name):
+    """Skąd brać changelog: None = FeatureNotes/CLG-fe.py, "static" = CHANGELOG.md."""
+    return PROJECTS[project_name].get("changelog")
 
 
 def parse_args(argv=None):
@@ -273,6 +280,62 @@ def run_clg(project_path):
     return version, content
 
 
+def _git_show(project_path, branch, path):
+    result = subprocess.run(
+        ["git", "show", f"origin/{branch}:{path}"],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def _changelog_entries(text):
+    """[(kategoria, wpis)] dla każdej linii `- ...` w CHANGELOG.md."""
+    entries = []
+    category = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("###"):
+            category = stripped
+        elif stripped.startswith("- "):
+            entries.append((category, stripped))
+    return entries
+
+
+def collect_static_changelog(project_path, source, target):
+    """Wpisy CHANGELOG.md obecne w `source`, a nieobecne w `target`, + wersja z VERSION.
+
+    Projekty ze statycznym changelogiem (pelicanapp) bumpują CHANGELOG.md i
+    VERSION już na branchu feature — skrypt ich nie generuje, tylko czyta.
+    Porównujemy treść wpisów, a nie numery wersji: ta sama sekcja bywa przy
+    wydaniu przenumerowana, więc numer nie identyfikuje zmian.
+    """
+    source_entries = _changelog_entries(_git_show(project_path, source, "CHANGELOG.md"))
+    target_entries = {
+        entry for _, entry in _changelog_entries(_git_show(project_path, target, "CHANGELOG.md"))
+    }
+
+    grouped = {}
+    for category, entry in source_entries:
+        if entry not in target_entries:
+            grouped.setdefault(category, []).append(entry)
+
+    if not grouped:
+        raise ValueError(f"Brak nowych wpisów w CHANGELOG.md ({source} vs {target})")
+
+    lines = []
+    for category, entries in grouped.items():
+        if category:
+            lines.extend([category, ""])
+        lines.extend(entries)
+        lines.append("")
+
+    version = _git_show(project_path, source, "VERSION").strip()
+    return version, "\n".join(lines).strip()
+
+
 def commit_release(project_path, version):
     subprocess.run(["git", "add", "-A"], cwd=project_path,
                    check=True, capture_output=True)
@@ -285,6 +348,14 @@ def commit_release(project_path, version):
 
 
 # ── GitLab API ─────────────────────────────────────────────────────────────────
+
+class MergeRequestExistsError(RuntimeError):
+    """GitLab odrzucił MR, bo dla tej pary gałęzi jest już otwarty inny."""
+
+    def __init__(self, url):
+        super().__init__(f"Otwarty MR już istnieje: {url}")
+        self.url = url
+
 
 def _get_gitlab_token():
     token = os.environ.get("GITLAB_TOKEN")
@@ -318,6 +389,15 @@ def create_gitlab_mr(namespace, source_branch, target_branch, title, description
         response = requests.post(url, headers=headers, json=payload)
         if response.ok:
             return response.json()["web_url"]
+
+        if response.status_code == 409:
+            existing_iid = re.search(
+                r"already exists for this source branch: !(\d+)", response.text
+            )
+            if existing_iid:
+                raise MergeRequestExistsError(
+                    f"{GITLAB_URL}/{namespace}/-/merge_requests/{existing_iid.group(1)}"
+                )
 
         is_branch_not_registered_yet = (
             response.status_code == 400
@@ -460,6 +540,63 @@ def run_clg_flow(project_name, flow):
     return mr_url_target
 
 
+def run_static_flow(project_name, flow):
+    """Projekty ze statycznym CHANGELOG.md: jeden MR prosto z gałęzi źródłowej.
+
+    Nie powstaje commit release'owy, więc branch release byłby kopią źródła,
+    a MRy back-merge nie miałyby czego wnieść.
+    """
+    project = PROJECTS[project_name]
+    path = project["path"]
+    namespace = project["namespace"]
+    cfg = FLOW_CONFIG[flow]
+    source, target = cfg["source"], cfg["target"]
+
+    _print_header(project_name, flow)
+
+    with _Step("Pobieranie zmian z remote"):
+        subprocess.run(["git", "fetch", "origin"], cwd=path,
+                       check=True, capture_output=True)
+
+    with _Step(f"Sprawdzanie {source} → {target}") as step:
+        if not has_branch_diff(path, source, target):
+            step.label = f"Brak commitów w {source} poza {target} — przerywam"
+            _print_no_changes(project_name, f"Brak commitów w {source} poza {target}")
+            sys.exit(1)
+        if not has_content_diff(path, source, target):
+            step.label = f"Brak nowych zmian w {source} vs {target} — przerywam"
+            _print_no_changes(project_name, f"Brak nowych zmian w {source} vs {target}")
+            sys.exit(1)
+        step.label = f"{source} wyprzedza {target}"
+
+    with _Step("Czytanie CHANGELOG.md") as step:
+        try:
+            version, description = collect_static_changelog(path, source, target)
+        except ValueError as error:
+            step.label = f"{error} — przerywam"
+            _print_no_changes(project_name, str(error))
+            sys.exit(1)
+        step.label = f"CHANGELOG.md → v{version}"
+
+    with _Step(f"Tworzenie MR → {target}") as step:
+        try:
+            mr_url = create_gitlab_mr(
+                namespace=namespace,
+                source_branch=source,
+                target_branch=target,
+                title=f"{project_name} Release {source} -> {target} v{version}",
+                description=description,
+            )
+            step.label = f"MR → {target} utworzony"
+        except MergeRequestExistsError as error:
+            mr_url = error.url
+            step.label = f"MR → {target} już istnieje — używam go"
+
+    title = f"{project_name} Release {source} -> {target} v{version}"
+    _print_result(project_name, title, mr_url, description)
+    return mr_url
+
+
 def run_test_to_stage(project_name):
     return run_clg_flow(project_name, "test-to-stage")
 
@@ -470,7 +607,9 @@ def run_test_to_master(project_name):
 
 def main():
     args = parse_args()
-    if args.flow == "sit-to-test":
+    if changelog_strategy(args.project) == "static":
+        run_static_flow(args.project, args.flow)
+    elif args.flow == "sit-to-test":
         run_sit_to_test(args.project)
     else:
         run_clg_flow(args.project, args.flow)
