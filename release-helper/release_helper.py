@@ -231,21 +231,44 @@ def get_new_feature_note_files(project_path):
     )
 
 
-def collect_feature_notes(project_path, only_files=None):
-    fn_dir = os.path.join(project_path, "FeatureNotes")
-    if not os.path.isdir(fn_dir):
-        raise ValueError(f"Katalog FeatureNotes nie istnieje: {fn_dir}")
+def list_feature_notes(project_path, branch):
+    """Pliki FeatureNotes/SAN-*.md obecne w gałęzi `branch`."""
+    result = subprocess.run(
+        ["git", "ls-tree", "--name-only", f"origin/{branch}", "FeatureNotes/"],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [
+        os.path.basename(path)
+        for path in result.stdout.split()
+        if os.path.basename(path).startswith("SAN-")
+    ]
+
+
+def collect_feature_notes(project_path, source, only_files=None):
+    """Agreguje FeatureNotes z gałęzi `source` wg kategorii.
+
+    Treść czytamy z refu, nie z working tree: listę plików wyznacza
+    `get_new_feature_note_files` na podstawie origin/*, więc odczyt musi
+    patrzeć na ten sam stan niezależnie od tego, co akurat leży na dysku.
+    """
     if only_files is not None:
         files = sorted(f for f in only_files if f.startswith("SAN-"))
     else:
-        files = sorted(f for f in os.listdir(fn_dir) if f.startswith("SAN-"))
+        files = sorted(list_feature_notes(project_path, source))
     if not files:
         raise ValueError("Brak plików FeatureNotes — nie ma co mergować")
 
     categories = {}
     for filename in files:
-        with open(os.path.join(fn_dir, filename)) as f:
-            content = f.read().strip()
+        try:
+            content = _git_show(project_path, source, f"FeatureNotes/{filename}").strip()
+        except subprocess.CalledProcessError:
+            raise ValueError(
+                f"Brak pliku FeatureNotes/{filename} w gałęzi {source}"
+            ) from None
         header, _, notes = content.partition("\n")
         category = header
         if category not in categories:
@@ -473,7 +496,7 @@ def run_sit_to_test(project_name):
         create_release_branch(path, source, branch_name)
 
     with _Step("Zbieranie FeatureNotes") as step:
-        description = collect_feature_notes(path, only_files=new_fn_files)
+        description = collect_feature_notes(path, source, only_files=new_fn_files)
         step.label = "FeatureNotes zebrane"
 
     with _Step("Wysyłanie brancha do origin"):

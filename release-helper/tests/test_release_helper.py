@@ -1,5 +1,6 @@
 import pytest
 import sys
+import subprocess
 import tempfile
 import os
 from unittest.mock import patch, MagicMock
@@ -140,55 +141,78 @@ def test_get_new_feature_note_files_empty():
     assert result == []
 
 
-def _make_feature_notes(tmp_dir, files):
-    fn_dir = os.path.join(tmp_dir, "FeatureNotes")
-    os.makedirs(fn_dir)
-    for name, content in files.items():
-        with open(os.path.join(fn_dir, name), "w") as f:
-            f.write(content)
-    return tmp_dir
+def _git_show_mocks(notes):
+    """subprocess.run side_effect: kolejne `git show` zwracają treść notatek."""
+    return [MagicMock(stdout=body) for body in notes]
 
 
-def test_collect_feature_notes_aggregates_by_category():
+def test_collect_feature_notes_reads_content_from_branch_not_working_tree():
+    notes = {
+        "SAN-100.md": "### [Poprawiono]\n\n- SAN-100: fix A\n",
+        "SAN-101.md": "### [Dodano]\n\n- SAN-101: add B\n",
+        "SAN-102.md": "### [Poprawiono]\n\n- SAN-102: fix C\n",
+    }
     with tempfile.TemporaryDirectory() as tmp:
-        _make_feature_notes(tmp, {
-            "SAN-100.md": "### [Poprawiono]\n\n- SAN-100: fix A\n",
-            "SAN-101.md": "### [Dodano]\n\n- SAN-101: add B\n",
-            "SAN-102.md": "### [Poprawiono]\n\n- SAN-102: fix C\n",
-        })
-        result = release_helper.collect_feature_notes(tmp)
-    assert "### [Poprawiono]" in result
-    assert "### [Dodano]" in result
+        # katalog celowo pusty — treść ma pochodzić z refu, nie z dysku
+        with patch("release_helper.subprocess.run") as mock_run:
+            mock_run.side_effect = _git_show_mocks(notes.values())
+            result = release_helper.collect_feature_notes(
+                tmp, "sit", only_files=list(notes)
+            )
+
     assert "- SAN-100: fix A" in result
     assert "- SAN-101: add B" in result
     assert "- SAN-102: fix C" in result
+    assert "### [Poprawiono]" in result
+    assert "### [Dodano]" in result
+
+    commands = [call[0][0] for call in mock_run.call_args_list]
+    assert commands == [
+        ["git", "show", "origin/sit:FeatureNotes/SAN-100.md"],
+        ["git", "show", "origin/sit:FeatureNotes/SAN-101.md"],
+        ["git", "show", "origin/sit:FeatureNotes/SAN-102.md"],
+    ]
 
 
 def test_collect_feature_notes_with_only_files():
-    with tempfile.TemporaryDirectory() as tmp:
-        _make_feature_notes(tmp, {
-            "SAN-100.md": "### [Poprawiono]\n\n- SAN-100: fix A\n",
-            "SAN-101.md": "### [Dodano]\n\n- SAN-101: add B\n",
-            "SAN-102.md": "### [Poprawiono]\n\n- SAN-102: fix C\n",
-        })
-        result = release_helper.collect_feature_notes(tmp, only_files=["SAN-100.md"])
+    with patch("release_helper.subprocess.run") as mock_run:
+        mock_run.side_effect = _git_show_mocks(["### [Poprawiono]\n\n- SAN-100: fix A\n"])
+        result = release_helper.collect_feature_notes(
+            "/fake/path", "sit", only_files=["SAN-100.md"]
+        )
+
     assert "- SAN-100: fix A" in result
-    assert "- SAN-101: add B" not in result
-    assert "- SAN-102: fix C" not in result
+    assert mock_run.call_count == 1
 
 
-def test_collect_feature_notes_raises_when_empty():
-    with tempfile.TemporaryDirectory() as tmp:
-        os.makedirs(os.path.join(tmp, "FeatureNotes"))
+def test_collect_feature_notes_lists_files_from_branch():
+    with patch("release_helper.subprocess.run") as mock_run:
+        mock_run.side_effect = [
+            MagicMock(stdout="FeatureNotes/SAN-100.md\nFeatureNotes/SAN-101.md\n"),
+            MagicMock(stdout="### [Dodano]\n\n- SAN-100: add A\n"),
+            MagicMock(stdout="### [Dodano]\n\n- SAN-101: add B\n"),
+        ]
+        result = release_helper.collect_feature_notes("/fake/path", "sit")
+
+    assert "- SAN-100: add A" in result
+    assert "- SAN-101: add B" in result
+    assert mock_run.call_args_list[0][0][0] == [
+        "git", "ls-tree", "--name-only", "origin/sit", "FeatureNotes/"
+    ]
+
+
+def test_collect_feature_notes_raises_when_branch_has_no_notes():
+    with patch("release_helper.subprocess.run") as mock_run:
+        mock_run.side_effect = [MagicMock(stdout="")]
         with pytest.raises(ValueError, match="Brak plików FeatureNotes"):
-            release_helper.collect_feature_notes(tmp)
+            release_helper.collect_feature_notes("/fake/path", "sit")
 
 
-def test_collect_feature_notes_raises_when_no_directory():
-    with tempfile.TemporaryDirectory() as tmp:
-        # tmp dir exists but has no FeatureNotes subdirectory
-        with pytest.raises(ValueError, match="Katalog FeatureNotes nie istnieje"):
-            release_helper.collect_feature_notes(tmp)
+def test_collect_feature_notes_raises_when_file_missing_in_branch():
+    with patch("release_helper.subprocess.run") as mock_run:
+        mock_run.side_effect = subprocess.CalledProcessError(128, "git show")
+        with pytest.raises(ValueError, match="SAN-100.md"):
+            release_helper.collect_feature_notes("/fake/path", "sit", only_files=["SAN-100.md"])
 
 
 def test_run_clg_returns_version_and_content():
