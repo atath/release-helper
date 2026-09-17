@@ -103,6 +103,9 @@ python release_helper.py --project pelicanapp --flow test-to-master
 
 **Tytuł MRa:** `Release sit -> test DD.MM.YYYY`
 
+Powstaje jeden MR, bez back-merge do `sit`. Ten przepływ nie dokłada commita,
+więc branch release jest kopią `sit` — MR back-merge nie miałby czego wnieść.
+
 ### test → master
 
 1. Sprawdza czy `test` ma commity których nie ma `master` (jeśli nie — abort)
@@ -163,6 +166,9 @@ Każdy plik `FeatureNotes/SAN-XXXX.md` powinien mieć strukturę:
 ```
 
 Kategorie (`### [Dodano]`, `### [Poprawiono]`, itp.) są grupowane automatycznie w opisie MRa.
+
+Treść notatek skrypt czyta z gałęzi źródłowej (`git show origin/sit:FeatureNotes/...`),
+a nie z katalogu roboczego. Niezacommitowane i niewypchnięte zmiany nie trafią do opisu MRa.
 
 ## Testy
 
