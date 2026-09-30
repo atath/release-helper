@@ -748,9 +748,9 @@ def test_main_dispatches_static_flow_for_pelicanapp():
 
 def test_main_keeps_featurenotes_flow_for_jaguarapp_front():
     with patch("release_helper.run_static_flow") as mock_static, \
-         patch("release_helper.run_sit_to_test") as mock_sit, \
+         patch("release_helper.run_featurenotes_flow") as mock_sit, \
          patch.object(sys, "argv", ["release_helper.py", "--project", "jaguarapp-front", "--flow", "sit-to-test"]):
         release_helper.main()
 
-    mock_sit.assert_called_once_with("jaguarapp-front")
+    mock_sit.assert_called_once_with("jaguarapp-front", "sit-to-test")
     mock_static.assert_not_called()

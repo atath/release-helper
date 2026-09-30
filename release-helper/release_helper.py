@@ -2,6 +2,7 @@ import argparse
 import atexit
 import datetime
 import itertools
+import json
 import os
 import re
 import subprocess
@@ -10,21 +11,47 @@ import threading
 import time
 import requests
 
-from config import GITLAB_URL, PROJECTS
-
 GITLAB_TOKEN_FILE = os.path.expanduser("~/.config/tokens/gitlab")
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
-FLOWS = ["sit-to-test", "test-to-stage", "test-to-master"]
+# Typy przepływów, które skrypt umie wykonać. Nowy przepływ jednego z tych typów
+# dodajesz samym wpisem w config.json, bez zmian w kodzie.
+#   featurenotes: opis MR-a z nowych FeatureNotes, bez commita (jak sit -> test)
+#   clg:          CLG-fe.py skleja RelNote i podbija wersje, commit + MR-y back-merge
+FLOW_TYPES = ("featurenotes", "clg")
 
+
+def load_config(path=None):
+    """Czyta i waliduje config.json. Wspolne zrodlo dla CLI i panelu."""
+    with open(path or CONFIG_FILE, encoding="utf-8") as f:
+        cfg = json.load(f)
+    flows = cfg.get("flows") or {}
+    for name, fc in flows.items():
+        for key in ("source", "target", "back_merge", "typ"):
+            if key not in fc:
+                raise ValueError(f"config.json: flow '{name}' nie ma pola '{key}'")
+        if fc["typ"] not in FLOW_TYPES:
+            raise ValueError(f"config.json: flow '{name}' ma typ '{fc['typ']}', dozwolone: {FLOW_TYPES}")
+    for name, pc in (cfg.get("projects") or {}).items():
+        for key in ("path", "namespace"):
+            if key not in pc:
+                raise ValueError(f"config.json: projekt '{name}' nie ma pola '{key}'")
+        nieznane = [f for f in pc.get("flows", []) if f not in flows]
+        if nieznane:
+            raise ValueError(f"config.json: projekt '{name}' ma nieznany flow: {', '.join(nieznane)}")
+        pc["path"] = os.path.expanduser(pc["path"])
+    return cfg
+
+
+_CONFIG = load_config()
+GITLAB_URL = _CONFIG["gitlab_url"]
+PROJECTS = _CONFIG["projects"]
 # back_merge: gałęzie, do których po wydaniu wraca ten sam branch release,
 # żeby środowiska niższe nie odstawały od wyższych. Pusta lista przy
 # sit-to-test: ten przepływ nie dokłada commita, więc branch release jest
 # kopią sit, a MR back-merge nie miałby czego wnieść.
-FLOW_CONFIG = {
-    "sit-to-test":    {"source": "sit",  "target": "test",   "back_merge": []},
-    "test-to-stage":  {"source": "test", "target": "stage",  "back_merge": ["test", "sit"]},
-    "test-to-master": {"source": "test", "target": "master", "back_merge": ["test", "sit"]},
-}
+FLOW_CONFIG = _CONFIG["flows"]
+FLOWS = list(FLOW_CONFIG)
 
 # ── ANSI ──────────────────────────────────────────────────────────────────────
 _G  = '\033[32m'   # green
@@ -215,9 +242,9 @@ def push_branch(project_path, branch_name):
     )
 
 
-def get_new_feature_note_files(project_path):
+def get_new_feature_note_files(project_path, source="sit", target="test"):
     result = subprocess.run(
-        ["git", "diff", "origin/test", "origin/sit",
+        ["git", "diff", f"origin/{target}", f"origin/{source}",
          "--name-only", "--diff-filter=A", "--", "FeatureNotes/"],
         cwd=project_path,
         capture_output=True,
@@ -247,7 +274,7 @@ def list_feature_notes(project_path, branch):
     ]
 
 
-def collect_feature_notes(project_path, source, only_files=None):
+def collect_feature_notes(project_path, source, only_files=None, target="test"):
     """Agreguje FeatureNotes z gałęzi `source` wg kategorii.
 
     Treść czytamy z refu, nie z working tree: listę plików wyznacza
@@ -276,7 +303,7 @@ def collect_feature_notes(project_path, source, only_files=None):
         categories[category].append(notes.strip())
 
     today = datetime.date.today().strftime("%d.%m.%Y")
-    lines = [f"## Changelog [sit → test] — {today}"]
+    lines = [f"## Changelog [{source} → {target}] — {today}"]
     for category, notes_list in categories.items():
         lines.append(f"\n{category}\n")
         for note in notes_list:
@@ -461,12 +488,18 @@ def _create_flow_mrs(project_name, namespace, branch_name, flow, label, descript
 
 
 def run_sit_to_test(project_name):
+    return run_featurenotes_flow(project_name, "sit-to-test")
+
+
+def run_featurenotes_flow(project_name, flow):
+    """Przepływ bez commita: branch release z gałęzi źródłowej, opis MR-a z nowych FeatureNotes."""
     project = PROJECTS[project_name]
     path = project["path"]
     namespace = project["namespace"]
-    source, target = "sit", "test"
+    cfg = FLOW_CONFIG[flow]
+    source, target = cfg["source"], cfg["target"]
 
-    _print_header(project_name, "sit-to-test")
+    _print_header(project_name, flow)
 
     with _Step("Pobieranie zmian z remote"):
         subprocess.run(["git", "fetch", "origin"], cwd=path,
@@ -479,13 +512,13 @@ def run_sit_to_test(project_name):
             sys.exit(1)
         step.label = f"{source} wyprzedza {target}"
 
-    branch_name = make_branch_name("sit-to-test")
+    branch_name = make_branch_name(flow)
     with _Step("Wyznaczanie nazwy brancha") as step:
         branch_name = find_available_branch_name(path, branch_name)
         step.label = f"Branch → {branch_name}"
 
     with _Step("Sprawdzanie nowych FeatureNotes") as step:
-        new_fn_files = get_new_feature_note_files(path)
+        new_fn_files = get_new_feature_note_files(path, source, target)
         if not new_fn_files:
             step.label = f"Brak nowych zmian w {source} vs {target} — przerywam"
             _print_no_changes(project_name, f"Brak nowych zmian w {source} vs {target}")
@@ -496,7 +529,7 @@ def run_sit_to_test(project_name):
         create_release_branch(path, source, branch_name)
 
     with _Step("Zbieranie FeatureNotes") as step:
-        description = collect_feature_notes(path, source, only_files=new_fn_files)
+        description = collect_feature_notes(path, source, only_files=new_fn_files, target=target)
         step.label = "FeatureNotes zebrane"
 
     with _Step("Wysyłanie brancha do origin"):
@@ -504,13 +537,13 @@ def run_sit_to_test(project_name):
 
     today = datetime.date.today().strftime("%d.%m.%Y")
 
-    mr_url_test = _create_flow_mrs(
-        project_name, namespace, branch_name, "sit-to-test", today, description
+    mr_url = _create_flow_mrs(
+        project_name, namespace, branch_name, flow, today, description
     )
 
-    title = f"{project_name} Release sit -> test {today}"
-    _print_result(project_name, title, mr_url_test, description)
-    return mr_url_test
+    title = f"{project_name} Release {source} -> {target} {today}"
+    _print_result(project_name, title, mr_url, description)
+    return mr_url
 
 
 def run_clg_flow(project_name, flow):
@@ -634,8 +667,8 @@ def main():
     args = parse_args()
     if changelog_strategy(args.project) == "static":
         run_static_flow(args.project, args.flow)
-    elif args.flow == "sit-to-test":
-        run_sit_to_test(args.project)
+    elif FLOW_CONFIG[args.flow]["typ"] == "featurenotes":
+        run_featurenotes_flow(args.project, args.flow)
     else:
         run_clg_flow(args.project, args.flow)
 

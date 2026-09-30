@@ -1,0 +1,51 @@
+{
+  "gitlab_url": "https://git.sandis.io",
+  "flows": {
+    "sit-to-test": {
+      "source": "sit",
+      "target": "test",
+      "back_merge": [],
+      "typ": "featurenotes",
+      "opis": "Opis MR-a z nowych FeatureNotes. Bez commita, więc bez back-merge."
+    },
+    "test-to-stage": {
+      "source": "test",
+      "target": "stage",
+      "back_merge": ["test", "sit"],
+      "typ": "clg",
+      "opis": "CLG-fe.py składa RelNote i podbija wersję, potem MR-y do stage, test i sit."
+    },
+    "test-to-master": {
+      "source": "test",
+      "target": "master",
+      "back_merge": ["test", "sit"],
+      "typ": "clg",
+      "opis": "CLG-fe.py składa RelNote i podbija wersję, potem MR-y do master, test i sit."
+    }
+  },
+  "projects": {
+    "jaguarapp-front": {
+      "path": "~/projekty/jaguarapp-front",
+      "namespace": "sandis/jaguarapp-front",
+      "flows": ["sit-to-test", "test-to-master"]
+    },
+    "claims-front": {
+      "path": "~/projekty/claims-front",
+      "namespace": "sandis/claims-front",
+      "flows": ["sit-to-test", "test-to-stage"],
+      "opis": "sit → test → stage → prod. Krok stage → prod robisz ręcznie w GitLabie."
+    },
+    "d2c-front": {
+      "path": "~/projekty/d2c-front",
+      "namespace": "sandis/d2c-front",
+      "flows": ["sit-to-test", "test-to-master"]
+    },
+    "pelicanapp": {
+      "path": "~/projekty/pelicanapp",
+      "namespace": "sandis/pelicanapp",
+      "changelog": "static",
+      "flows": ["sit-to-test", "test-to-master"],
+      "opis": "Statyczny CHANGELOG.md bumpowany na branchu feature. Skrypt go tylko czyta, jeden MR prosto z gałęzi źródłowej."
+    }
+  }
+}
