@@ -28,30 +28,22 @@ chmod 600 ~/.config/tokens/gitlab
 
 Token tworzysz w GitLab → *User Settings → Access Tokens* → scope: **api**.
 
-### 2. Ścieżki projektów
+### 2. Projekty i przepływy: `config.json`
 
-Skopiuj szablon konfiguracji i uzupełnij lokalne ścieżki:
+Jeden plik dla CLI i panelu. Ścieżki zapisane przez `~`, więc plik nie zawiera nic osobistego
+i leży w repozytorium.
 
-```bash
-cp config.py.dist config.py
-```
+- `flows`: przepływy. Każdy ma `source`, `target`, `back_merge` i `typ`:
+  - `featurenotes`: opis MR-a z nowych FeatureNotes, bez commita (dziś sit → test),
+  - `clg`: `CLG-fe.py` składa RelNote i podbija wersję, commit i MR-y back-merge (dziś test → stage, test → master).
+- `projects`: projekty z `path`, `namespace` i listą `flows`. `"changelog": "static"` oznacza statyczny
+  `CHANGELOG.md` (pelicanapp). Brak `flows` znaczy „wszystkie przepływy".
+- Pole `opis` to komentarz dla człowieka, skrypt go nie czyta.
 
-Następnie edytuj `config.py` — zamień `YOUR_USER` na swoją nazwę użytkownika:
+Nowy przepływ jednego z dwóch typów dodajesz samym wpisem w `config.json`. Skrypt waliduje plik
+przy starcie: nieznany typ, brak pola albo projekt z nieistniejącym przepływem kończą się błędem.
 
-```python
-PROJECTS = {
-    "jaguarapp-front": {
-        "path": "/home/YOUR_USER/projekty/jaguarapp-front",
-        ...
-    },
-    ...
-}
-```
-
-`config.py` jest w `.gitignore` — Twoje ścieżki nie trafią do repozytorium.
-
-Klucz `flows` ogranicza dostępne przepływy do tych, które projekt realnie wspiera.
-Pominięcie klucza oznacza „wszystkie przepływy".
+Stary `config.py` nie jest już czytany i można go usunąć.
 
 ## Użycie
 
@@ -68,10 +60,10 @@ Nie każdy przepływ działa w każdym projekcie — progresja gałęzi się ró
 |---|---|---|
 | `jaguarapp-front` | sit → test → master | `sit-to-test`, `test-to-master` |
 | `d2c-front` | sit → test → master | `sit-to-test`, `test-to-master` |
-| `claims-front` | sit → test → stage → master | `sit-to-test`, `test-to-stage` |
+| `claims-front` | sit → test → stage → prod | `sit-to-test`, `test-to-stage` |
 | `pelicanapp` | develop → sit → test → master | `sit-to-test`, `test-to-master` |
 
-W claims-front krok `stage → master` robisz ręcznie w GitLabie — skrypt go nie obsługuje.
+W claims-front krok `stage → prod` robisz ręcznie w GitLabie, skrypt go nie obsługuje.
 
 `pelicanapp` działa inaczej niż projekty frontendowe — patrz [Statyczny CHANGELOG.md](#statyczny-changelogmd).
 
@@ -90,6 +82,32 @@ python release_helper.py --project jaguarapp-front --flow test-to-master
 python release_helper.py --project claims-front --flow test-to-stage
 python release_helper.py --project pelicanapp --flow test-to-master
 ```
+
+## Panel w przeglądarce
+
+Panel działa jako usługa użytkownika w systemd i startuje przy logowaniu. Wchodzisz na
+**http://127.0.0.1:8765/** (warto dodać do zakładek), wybierasz przepływ i projekty, klikasz
+„Wystaw release”, potem „Potwierdź”. Panel uruchamia `release_helper.py` osobno dla każdego
+projektu, po kolei, i pokazuje każdą wiadomość osobno, z przyciskiem „Kopiuj”. Projekt bez zmian
+dostaje „brak zmian”, błąd pokazuje log helpera. Projekty i przepływy bierze z `config.json`,
+czytanego przy każdym wejściu: po zmianie pliku wystarczy odświeżyć stronę.
+
+- Repo z niezacommitowanymi zmianami jest blokowane przed uruchomieniem helpera, bo helper robi
+  `git checkout`. Projekty ze statycznym changelogiem nie są blokowane, bo czytają tylko refy.
+- Jeden release naraz. Drugie kliknięcie w trakcie zwraca błąd.
+- Serwer słucha tylko na `127.0.0.1`. API wymaga tokenu generowanego przy starcie i sprawdza nagłówek `Host`,
+  bo na localhost może wysłać żądanie każda strona otwarta w przeglądarce.
+
+Usługa: `~/.config/systemd/user/release-panel.service`.
+
+```bash
+systemctl --user status release-panel     # stan
+systemctl --user restart release-panel    # tylko po zmianie kodu
+journalctl --user -u release-panel -f     # logi
+systemctl --user disable --now release-panel   # wyłączenie
+```
+
+Ręcznie, bez usługi: `python panel.py` (otwiera przeglądarkę), `--port 9000 --bez-przegladarki`.
 
 ## Przepływy
 
