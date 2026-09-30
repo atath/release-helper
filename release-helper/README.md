@@ -98,6 +98,8 @@ czytanego przy każdym wejściu: po zmianie pliku wystarczy odświeżyć stronę
 - Serwer słucha tylko na `127.0.0.1`. API wymaga tokenu generowanego przy starcie i sprawdza nagłówek `Host`,
   bo na localhost może wysłać żądanie każda strona otwarta w przeglądarce.
 
+Wygląd strony siedzi w `panel.html`, też czytanym przy każdym wejściu.
+
 Usługa: `~/.config/systemd/user/release-panel.service`.
 
 ```bash

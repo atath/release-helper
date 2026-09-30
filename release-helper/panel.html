@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Releasy</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Ccircle cx=%274%27 cy=%278%27 r=%273%27 fill=%27%231D5FD1%27/%3E%3Ccircle cx=%2712%27 cy=%278%27 r=%273%27 fill=%27%231D5FD1%27/%3E%3Crect x=%274%27 y=%277%27 width=%278%27 height=%272%27 fill=%27%231D5FD1%27/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --tlo: #EEF1F5; --powierzchnia: #FFFFFF; --tekst: #16202E; --slaby: #5B6778; --linia: #C9D1DC; --linia-miekka: #E1E6ED;
+  --sygnal: #1D5FD1; --sygnal-tlo: #E6EEFB; --ok: #1E8E5A; --ok-tlo: #E5F4EC; --uwaga: #A8720C; --uwaga-tlo: #FBF1DC;
+  --blad: #C4382F; --blad-tlo: #FBE7E5; --kod: #F4F6F9; --cien: 0 1px 2px rgba(22, 32, 46, .06);
+  --sans: "Schibsted Grotesk", ui-sans-serif, system-ui, sans-serif; --mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tlo: #10151D; --powierzchnia: #171E28; --tekst: #E4E9F0; --slaby: #95A1B2; --linia: #2E3947; --linia-miekka: #232C38;
+    --sygnal: #6E9CFF; --sygnal-tlo: #1B2A45; --ok: #4CC38A; --ok-tlo: #15291F; --uwaga: #E3B34E; --uwaga-tlo: #2E2513;
+    --blad: #FF7B72; --blad-tlo: #33191A; --kod: #121820; --cien: none;
+  }
+}
+* { box-sizing: border-box; }
+html { background: var(--tlo); }
+body { margin: 0; color: var(--tekst); font: 16px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+main { max-width: 880px; margin: 0 auto; padding: 40px 16px 140px; }
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--sygnal); outline-offset: 2px; }
+
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 36px; }
+h1 { font-size: 30px; line-height: 1.1; font-weight: 700; letter-spacing: -.02em; margin: 0; }
+header p { margin: 0; color: var(--slaby); font-size: 14px; }
+h2 { font-size: 15px; font-weight: 600; margin: 0 0 12px; }
+.blok { margin-bottom: 32px; }
+
+/* Tory przepływów: element, który ma zapadać w pamięć */
+.tory { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.tor { position: relative; display: block; text-align: left; background: var(--powierzchnia); border: 1px solid var(--linia);
+  border-radius: 14px; padding: 16px 18px 14px; cursor: pointer; box-shadow: var(--cien); transition: border-color .15s, background .15s; }
+.tor:hover { border-color: var(--slaby); }
+.tor[aria-pressed="true"] { border-color: var(--sygnal); background: var(--sygnal-tlo); }
+.tor .trasa { display: flex; align-items: center; gap: 0; font: 500 15px var(--mono); }
+.tor .stacja { display: flex; align-items: center; gap: 8px; }
+.tor .kropka { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--slaby); background: var(--powierzchnia); flex: none; }
+.tor .szyna { flex: 1; height: 2px; background: var(--linia); margin: 0 10px; min-width: 24px; position: relative; overflow: hidden; }
+.tor[aria-pressed="true"] .kropka { border-color: var(--sygnal); background: var(--sygnal); }
+.tor[aria-pressed="true"] .szyna { background: var(--sygnal); }
+.tor .opis { margin-top: 10px; font-size: 13px; color: var(--slaby); }
+
+/* Projekty */
+.projekty { background: var(--powierzchnia); border: 1px solid var(--linia); border-radius: 14px; box-shadow: var(--cien); overflow: hidden; }
+.projekt { display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 14px; padding: 14px 18px; cursor: pointer; }
+.projekt + .projekt { border-top: 1px solid var(--linia-miekka); }
+.projekt input { width: 18px; height: 18px; accent-color: var(--sygnal); margin: 0; cursor: pointer; }
+.projekt .nazwa { font-weight: 600; }
+.projekt .powod { display: block; font-size: 13px; color: var(--slaby); font-weight: 400; }
+.projekt.wyl { cursor: not-allowed; }
+.projekt.wyl .nazwa, .projekt.wyl .drabina { opacity: .45; }
+.projekt.wyl input { cursor: not-allowed; }
+.drabina { display: flex; align-items: center; font: 12px var(--mono); color: var(--slaby); }
+.drabina .st { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 44px; }
+.drabina .k { width: 9px; height: 9px; border-radius: 50%; background: var(--linia); }
+.drabina .s { width: 26px; height: 2px; background: var(--linia); margin-bottom: 18px; }
+.drabina .st.aktywna .k { background: var(--sygnal); }
+.drabina .st.aktywna { color: var(--sygnal); font-weight: 500; }
+.drabina .s.aktywna { background: var(--sygnal); }
+.pusto { padding: 18px; color: var(--slaby); font-size: 14px; }
+
+/* Pasek akcji */
+.pasek { position: fixed; left: 0; right: 0; bottom: 0; background: color-mix(in srgb, var(--powierzchnia) 92%, transparent);
+  backdrop-filter: blur(8px); border-top: 1px solid var(--linia); }
+.pasek .wnetrze { max-width: 880px; margin: 0 auto; padding: 14px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pasek .podsumowanie { flex: 1; min-width: 200px; font-size: 14px; color: var(--slaby); }
+.pasek .podsumowanie strong { color: var(--tekst); font-weight: 600; }
+.pasek.potwierdzanie { background: var(--blad-tlo); border-top-color: var(--blad); }
+.pasek.potwierdzanie .podsumowanie { color: var(--tekst); }
+.przycisk { border: 1px solid var(--linia); background: var(--powierzchnia); border-radius: 10px; padding: 9px 16px; cursor: pointer; font-weight: 500; }
+.przycisk:hover { border-color: var(--slaby); }
+.przycisk.glowny { background: var(--sygnal); border-color: var(--sygnal); color: #fff; font-weight: 600; }
+.przycisk.glowny:hover { filter: brightness(1.08); }
+.przycisk.grozny { background: var(--blad); border-color: var(--blad); color: #fff; font-weight: 600; }
+.przycisk:disabled { opacity: .5; cursor: not-allowed; filter: none; }
+.przycisk.maly { padding: 5px 12px; font-size: 14px; border-radius: 8px; }
+
+/* Wyniki */
+.wyniki { display: grid; gap: 14px; }
+.wynik { background: var(--powierzchnia); border: 1px solid var(--linia); border-radius: 14px; box-shadow: var(--cien); overflow: hidden; }
+.wynik .gora { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-left: 4px solid var(--linia); }
+.wynik .gora .nazwa { font-weight: 600; flex: 1; }
+.wynik .akcje { display: flex; gap: 8px; align-items: center; }
+.znak { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 99px; background: var(--kod); color: var(--slaby); white-space: nowrap; }
+.wynik.ok .gora { border-left-color: var(--ok); } .wynik.ok .znak { background: var(--ok-tlo); color: var(--ok); }
+.wynik.brak_zmian .gora { border-left-color: var(--uwaga); } .wynik.brak_zmian .znak { background: var(--uwaga-tlo); color: var(--uwaga); }
+.wynik.blad .gora, .wynik.zablokowany .gora { border-left-color: var(--blad); }
+.wynik.blad .znak, .wynik.zablokowany .znak { background: var(--blad-tlo); color: var(--blad); }
+.wynik.trwa .gora { border-left-color: var(--sygnal); } .wynik.trwa .znak { background: var(--sygnal-tlo); color: var(--sygnal); }
+.wynik .tresc { padding: 0 18px 16px 22px; }
+.wynik .komunikat { margin: 0 0 4px; font-size: 14px; }
+pre { margin: 0; background: var(--kod); border: 1px solid var(--linia-miekka); border-radius: 10px; padding: 12px 14px;
+  white-space: pre-wrap; word-break: break-word; font: 13px/1.55 var(--mono); max-height: 360px; overflow: auto; }
+details { margin-top: 10px; } summary { cursor: pointer; color: var(--slaby); font-size: 13px; }
+details pre { margin-top: 8px; }
+.postep { height: 3px; background: var(--sygnal-tlo); position: relative; overflow: hidden; }
+.postep::after { content: ""; position: absolute; inset: 0; width: 35%; background: var(--sygnal); animation: jedzie 1.2s ease-in-out infinite; }
+@keyframes jedzie { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+a.mr { color: var(--sygnal); font-size: 14px; font-weight: 500; text-decoration: none; }
+a.mr:hover { text-decoration: underline; }
+@media (prefers-reduced-motion: reduce) { .postep::after { animation: none; width: 100%; opacity: .5; } .tor { transition: none; } }
+@media (max-width: 560px) {
+  h1 { font-size: 24px; } header { flex-direction: column; gap: 4px; }
+  .projekt { grid-template-columns: 24px 1fr; } .drabina { grid-column: 2; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Releasy</h1>
+    <p>Każdy projekt to osobny release i osobna wiadomość</p>
+  </header>
+
+  <section class="blok" aria-labelledby="h-flow">
+    <h2 id="h-flow">Co wypuszczamy</h2>
+    <div class="tory" id="tory" role="group" aria-labelledby="h-flow"></div>
+  </section>
+
+  <section class="blok" aria-labelledby="h-proj">
+    <h2 id="h-proj">Projekty</h2>
+    <div class="projekty" id="projekty"></div>
+  </section>
+
+  <section class="blok" id="blok-wyniki" hidden aria-labelledby="h-wyn">
+    <h2 id="h-wyn">Wiadomości</h2>
+    <div class="wyniki" id="wyniki"></div>
+  </section>
+</main>
+
+<div class="pasek" id="pasek">
+  <div class="wnetrze">
+    <div class="podsumowanie" id="podsumowanie" aria-live="polite">Wybierz przepływ i projekty</div>
+    <button class="przycisk" id="anuluj" hidden>Anuluj</button>
+    <button class="przycisk glowny" id="start" disabled>Wystaw release</button>
+  </div>
+</div>
+
+<script id="dane" type="application/json">__DANE__</script>
+<script>
+const D = JSON.parse(document.getElementById('dane').textContent);
+const $ = id => document.getElementById(id);
+const el = (tag, cls, tekst) => { const e = document.createElement(tag); if (cls) e.className = cls; if (tekst != null) e.textContent = tekst; return e; };
+const ETYKIETY = {czeka: 'czeka', trwa: 'w trakcie', ok: 'gotowe', brak_zmian: 'brak zmian', blad: 'błąd', zablokowany: 'zablokowany'};
+const OPISY = {featurenotes: 'Opis z nowych FeatureNotes, bez commita', clg: 'RelNote, nowa wersja i MR-y w dół'};
+let flow = null, potwierdzanie = false, trwa = false, odpytywanie = null;
+
+function api(sciezka, opcje = {}) {
+  return fetch(sciezka, {...opcje, headers: {'X-Token': D.token, 'Content-Type': 'application/json'}})
+    .then(async r => ({ok: r.ok, dane: await r.json()}));
+}
+
+function kolejnoscSrodowisk(flowy) {
+  // Srodowiska projektu w kolejnosci promocji, z krawedzi source -> target jego przeplywow.
+  const nast = {}, wej = {};
+  flowy.forEach(f => { const {source: a, target: b} = D.flowy[f]; nast[a] = b; wej[b] = true; });
+  let start = Object.keys(nast).find(s => !wej[s]), wynik = [];
+  while (start && !wynik.includes(start)) { wynik.push(start); start = nast[start]; }
+  return wynik;
+}
+
+function rysujTory() {
+  const uzywane = new Set(Object.values(D.projekty).flat());
+  $('tory').replaceChildren(...Object.entries(D.flowy).filter(([k]) => uzywane.has(k)).map(([k, f]) => {
+    const b = el('button', 'tor');
+    b.type = 'button';
+    b.setAttribute('aria-pressed', String(k === flow));
+    const trasa = el('div', 'trasa');
+    const st = n => { const s = el('span', 'stacja'); s.append(el('span', 'kropka'), el('span', null, n)); return s; };
+    trasa.append(st(f.source), el('span', 'szyna'), st(f.target));
+    b.append(trasa, el('div', 'opis', OPISY[f.typ] || ''));
+    b.onclick = () => { if (trwa) return; flow = k; rysujTory(); rysujProjekty(); reset(); };
+    return b;
+  }));
+}
+
+function rysujProjekty() {
+  const nazwy = Object.keys(D.projekty);
+  if (!nazwy.length) { $('projekty').replaceChildren(el('div', 'pusto', 'Brak projektów w config.json. Dopisz projekt i odśwież stronę.')); return; }
+  const zaznaczone = new Set(wybrane());
+  $('projekty').replaceChildren(...nazwy.map(p => {
+    const dozwolone = D.projekty[p], ok = !!flow && dozwolone.includes(flow);
+    const wiersz = el('label', 'projekt' + (ok ? '' : ' wyl'));
+    const cb = el('input'); cb.type = 'checkbox'; cb.value = p; cb.disabled = !ok || trwa; cb.checked = ok && zaznaczone.has(p);
+    cb.onchange = reset;
+    const nazwa = el('span', 'nazwa', p);
+    if (flow && !ok) nazwa.append(el('span', 'powod', `Nie ma przepływu ${D.flowy[flow].source} → ${D.flowy[flow].target}`));
+    const drab = el('div', 'drabina');
+    const srod = kolejnoscSrodowisk(dozwolone), akt = ok ? D.flowy[flow] : null;
+    const iA = akt ? srod.indexOf(akt.source) : -1, iB = akt ? srod.indexOf(akt.target) : -1;
+    srod.forEach((s, i) => {
+      if (i) drab.append(el('span', 's' + (i > iA && i <= iB ? ' aktywna' : '')));
+      const st = el('span', 'st' + (i >= iA && i <= iB && iA >= 0 ? ' aktywna' : ''));
+      st.append(el('span', 'k'), el('span', null, s));
+      drab.append(st);
+    });
+    wiersz.append(cb, nazwa, drab);
+    return wiersz;
+  }));
+}
+
+function wybrane() { return [...document.querySelectorAll('#projekty input:checked')].map(i => i.value); }
+
+function reset() {
+  potwierdzanie = false;
+  $('pasek').classList.remove('potwierdzanie');
+  $('start').className = 'przycisk glowny'; $('start').textContent = 'Wystaw release';
+  $('anuluj').hidden = true;
+  odswiezPodsumowanie();
+}
+
+function odswiezPodsumowanie() {
+  const lista = wybrane();
+  $('start').disabled = trwa || !flow || !lista.length;
+  if (trwa) { $('podsumowanie').textContent = 'Release w trakcie. Projekty idą po kolei.'; return; }
+  if (!flow) { $('podsumowanie').textContent = 'Wybierz przepływ i projekty'; return; }
+  const f = D.flowy[flow];
+  $('podsumowanie').replaceChildren(el('strong', null, `${f.source} → ${f.target}`),
+    document.createTextNode(lista.length ? ` dla: ${lista.join(', ')}` : ', zaznacz projekty'));
+}
+
+$('anuluj').onclick = reset;
+$('start').onclick = async () => {
+  const lista = wybrane();
+  if (!flow || !lista.length) return;
+  if (!potwierdzanie) {
+    potwierdzanie = true;
+    $('pasek').classList.add('potwierdzanie');
+    $('start').className = 'przycisk grozny'; $('start').textContent = 'Potwierdź i wystaw MR-y';
+    $('anuluj').hidden = false;
+    const f = D.flowy[flow];
+    $('podsumowanie').replaceChildren(el('strong', null, `${f.source} → ${f.target}`),
+      document.createTextNode(` dla: ${lista.join(', ')}. Powstaną gałęzie release i MR-y w GitLabie.`));
+    $('start').focus();
+    return;
+  }
+  reset();
+  const r = await api('/api/start', {method: 'POST', body: JSON.stringify({projekty: lista, flow})});
+  if (!r.ok) { $('podsumowanie').textContent = r.dane.blad; return; }
+  pokazStan(r.dane); odpytuj();
+};
+
+function odpytuj() {
+  clearInterval(odpytywanie);
+  odpytywanie = setInterval(async () => {
+    const r = await api('/api/stan');
+    if (!r.ok) return;
+    pokazStan(r.dane);
+    if (!r.dane.trwa) clearInterval(odpytywanie);
+  }, 1000);
+}
+
+function pokazStan(stan) {
+  const bylo = trwa;
+  trwa = stan.trwa;
+  if (bylo !== trwa) { rysujTory(); rysujProjekty(); }
+  odswiezPodsumowanie();
+  $('blok-wyniki').hidden = !stan.projekty.length;
+  $('wyniki').replaceChildren(...stan.projekty.map(karta));
+}
+
+function karta(p) {
+  const k = el('article', `wynik ${p.status}`);
+  const gora = el('div', 'gora'), akcje = el('div', 'akcje');
+  gora.append(el('span', 'nazwa', p.projekt), akcje);
+  const mr = p.wiadomosc && (p.wiadomosc.match(/MR:\s*(https?:\/\/\S+)/) || [])[1];
+  if (mr) { const a = el('a', 'mr', 'Otwórz MR'); a.href = mr; a.target = '_blank'; a.rel = 'noopener'; akcje.append(a); }
+  if (p.wiadomosc) {
+    const b = el('button', 'przycisk maly', 'Kopiuj'); b.type = 'button';
+    b.onclick = () => navigator.clipboard.writeText(p.wiadomosc)
+      .then(() => { b.textContent = 'Skopiowano'; setTimeout(() => b.textContent = 'Kopiuj', 1500); })
+      .catch(() => { b.textContent = 'Zaznacz tekst ręcznie'; });
+    akcje.append(b);
+  }
+  akcje.append(el('span', 'znak', ETYKIETY[p.status] || p.status));
+  k.append(gora);
+  if (p.status === 'trwa') k.append(el('div', 'postep'));
+  const tresc = el('div', 'tresc');
+  if (p.komunikat) tresc.append(el('p', 'komunikat', p.komunikat));
+  if (p.wiadomosc) tresc.append(el('pre', null, p.wiadomosc));
+  if (p.log && p.status !== 'ok') {
+    const det = el('details'); det.append(el('summary', null, 'Log helpera'), el('pre', null, p.log));
+    tresc.append(det);
+  }
+  if (tresc.childNodes.length) k.append(tresc);
+  return k;
+}
+
+rysujTory(); rysujProjekty(); odswiezPodsumowanie();
+api('/api/stan').then(r => { if (r.ok && r.dane.projekty.length) { pokazStan(r.dane); if (r.dane.trwa) odpytuj(); } });
+</script>
+</body>
+</html>
