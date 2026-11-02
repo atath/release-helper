@@ -18,7 +18,8 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.j
 # dodajesz samym wpisem w config.json, bez zmian w kodzie.
 #   featurenotes: opis MR-a z nowych FeatureNotes, bez commita (jak sit -> test)
 #   clg:          CLG-fe.py skleja RelNote i podbija wersje, commit + MR-y back-merge
-FLOW_TYPES = ("featurenotes", "clg")
+#   tag:          tag vX.Y.Z na gałęzi źródłowej przez API; release:vm w CI wydaje paczkę i zakłada release
+FLOW_TYPES = ("featurenotes", "clg", "tag")
 
 
 def load_config(path=None):
@@ -159,10 +160,19 @@ def changelog_strategy(project_name):
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Tworzy MR w GitLabie")
+    parser = argparse.ArgumentParser(description="Tworzy MR w GitLabie albo tag wydania")
     parser.add_argument("--project", required=True, choices=PROJECTS.keys())
     parser.add_argument("--flow", required=True, choices=FLOWS)
+    parser.add_argument("--version", help="numer tagu vX.Y.Z (tylko przepływ typu tag; bez niego numer z reguły)")
+    parser.add_argument("--plan", action="store_true",
+                        help="tylko przepływ typu tag: JSON z planem wydania z lokalnych refów, bez fetch i bez zapisu")
     args = parser.parse_args(argv)
+
+    is_tag = FLOW_CONFIG[args.flow]["typ"] == "tag"
+    if (args.version or args.plan) and not is_tag:
+        parser.error("--version i --plan działają tylko z przepływem typu tag")
+    if args.version and not TAG_RE.match(args.version):
+        parser.error(f"--version {args.version}: oczekiwany format vX.Y.Z")
 
     # argparse nie potrafi uzależnić choices jednego argumentu od drugiego,
     # więc dostępność flow per projekt sprawdzamy po sparsowaniu.
@@ -410,14 +420,13 @@ class MergeRequestExistsError(RuntimeError):
 
 
 def _get_gitlab_token():
-    token = os.environ.get("GITLAB_TOKEN")
-    if token:
-        return token
+    # Tylko z pliku: zmienna środowiskowa przecieka do procesów potomnych i transkryptów.
     if os.path.isfile(GITLAB_TOKEN_FILE):
-        return open(GITLAB_TOKEN_FILE).read().strip()
-    raise ValueError(
-        f"Brak tokenu GitLab. Ustaw GITLAB_TOKEN lub zapisz token w {GITLAB_TOKEN_FILE}"
-    )
+        with open(GITLAB_TOKEN_FILE) as f:
+            token = f.read().strip()
+        if token:
+            return token
+    raise ValueError(f"Brak tokenu GitLab. Zapisz token w {GITLAB_TOKEN_FILE}")
 
 
 def create_gitlab_mr(namespace, source_branch, target_branch, title, description):
@@ -655,17 +664,193 @@ def run_static_flow(project_name, flow):
     return mr_url
 
 
-def run_test_to_stage(project_name):
-    return run_clg_flow(project_name, "test-to-stage")
-
-
 def run_test_to_master(project_name):
     return run_clg_flow(project_name, "test-to-master")
 
 
+# ── Tag wydania (claims: release:vm w CI) ─────────────────────────────────────
+# Push na gałąź źródłową uruchamia build:vm, który wysyła paczkę generyczną o wersji równej SHA commita.
+# Tag vX.Y.Z uruchamia release:vm: ten wydaje paczkę commita z tagu i sam zakłada GitLab Release.
+# Wdrożenie wydanej paczki na produkcyjną VM jest osobnym, ręcznym krokiem.
+
+TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")   # ten sam wzorzec co reguła release:vm
+MAINTAINER = 40
+RELEASE_WAIT_S = 600
+RELEASE_POLL_S = 10
+
+
+def _semver(tag):
+    m = TAG_RE.match(tag or "")
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def _git_out(path, *args):
+    return subprocess.run(["git", *args], cwd=path, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def last_version_tag(path):
+    """Najwyższy lokalny tag vX.Y.Z i jego commit albo (None, None)."""
+    tags = [t for t in _git_out(path, "tag", "-l", "v*").splitlines() if _semver(t)]
+    if not tags:
+        return None, None
+    last = max(tags, key=_semver)
+    return last, _git_out(path, "rev-parse", f"{last}^{{commit}}")
+
+
+def propose_version(last, merges):
+    """Same merge'e gałęzi hotfix/* od ostatniego tagu dają patch, każdy inny merge minor."""
+    ma, mi, pa = _semver(last) or (0, 0, 0)
+    if merges and all(m.startswith("Merge branch 'hotfix/") for m in merges):
+        return f"v{ma}.{mi}.{pa + 1}"
+    return f"v{ma}.{mi + 1}.0"
+
+
+def tag_plan(project_name, flow):
+    """Plan wydania z lokalnych refów (bez fetch): ostatni tag, SHA źródła, commity i merge'e od tagu, propozycja."""
+    path = PROJECTS[project_name]["path"]
+    source = FLOW_CONFIG[flow]["source"]
+    sha = _git_out(path, "rev-parse", f"origin/{source}")
+    last, last_sha = last_version_tag(path)
+    zakres = f"{last}..origin/{source}" if last else f"origin/{source}"
+    commits = int(_git_out(path, "rev-list", "--count", zakres))
+    merges = [m for m in _git_out(path, "log", "--first-parent", "--merges", "--format=%s", zakres).splitlines() if m]
+    tickets = sorted(set(re.findall(r"SAN-\d+", " ".join(merges))), key=lambda t: int(t[4:]))
+    return {"ostatni": last, "ostatni_sha": last_sha, "sha": sha, "commity": commits, "merge": merges,
+            "zadania": tickets, "proponowany": propose_version(last, merges)}
+
+
+def _gitlab(method, path, **kwargs):
+    url = f"{GITLAB_URL}/api/v4/{path}"
+    response = requests.request(method, url, headers={"PRIVATE-TOKEN": _get_gitlab_token()}, timeout=30, **kwargs)
+    if response.status_code == 404 and method == "GET":
+        return None
+    if not response.ok:
+        raise RuntimeError(f"GitLab API {method} {path}: {response.status_code} {response.text[:300]}")
+    return response.json()
+
+
+def release_problems(namespace, package, source, sha):
+    """Powody, dla których tag nie wyda paczki: build:vm, paczka dla SHA, uprawnienia do chronionych tagów v*."""
+    ns = namespace.replace("/", "%2F")
+    problems = []
+    pipes = _gitlab("GET", f"projects/{ns}/pipelines", params={"sha": sha, "ref": source, "per_page": 5}) or []
+    job = None
+    if pipes:
+        jobs = _gitlab("GET", f"projects/{ns}/pipelines/{pipes[0]['id']}/jobs", params={"per_page": 50}) or []
+        job = next((j for j in jobs if j["name"] == "build:vm"), None)
+    if job is None:
+        problems.append(f"brak joba build:vm dla {sha[:8]} na {source}")
+    elif job["status"] in ("created", "pending", "running"):
+        problems.append(f"build:vm dla {sha[:8]} jeszcze trwa, spróbuj za kilka minut")
+    elif job["status"] != "success":
+        problems.append(f"build:vm dla {sha[:8]} ma status {job['status']}")
+    pkgs = _gitlab("GET", f"projects/{ns}/packages", params={"package_name": package, "package_type": "generic",
+                                                             "per_page": 100, "order_by": "created_at", "sort": "desc"}) or []
+    if not any(p["name"] == package and p["version"] == sha for p in pkgs) and job and job["status"] == "success":
+        problems.append(f"brak paczki {package} dla {sha[:8]}, release:vm nie miałby czego wydać")
+    me = _gitlab("GET", "user")
+    member = _gitlab("GET", f"projects/{ns}/members/all/{me['id']}") if me else None
+    if not member or member["access_level"] < MAINTAINER:
+        problems.append("tagi v* są chronione (Maintainer), Twój token nie ma tego dostępu")
+    return problems
+
+
+def wait_for_release(namespace, version, sha, timeout=RELEASE_WAIT_S, interval=RELEASE_POLL_S, sleep=time.sleep):
+    """Czeka na release:vm z pipeline'u tagu. Zwraca (status joba, url release'u | None, url pipeline'u | None)."""
+    ns = namespace.replace("/", "%2F")
+    waited, status, pipe_url = 0, "brak pipeline'u", None
+    while True:
+        pipes = _gitlab("GET", f"projects/{ns}/pipelines", params={"ref": version, "per_page": 5}) or []
+        if pipes:
+            pipe_url = pipes[0]["web_url"]
+            jobs = _gitlab("GET", f"projects/{ns}/pipelines/{pipes[0]['id']}/jobs") or []
+            job = next((j for j in jobs if j["name"] == "release:vm"), None)
+            status = job["status"] if job else "brak joba release:vm"
+            if job and status not in ("created", "pending", "running", "waiting_for_resource", "preparing"):
+                break
+        if waited >= timeout:
+            return f"{status} po {timeout // 60} min", None, pipe_url
+        sleep(interval)
+        waited += interval
+    release = _gitlab("GET", f"projects/{ns}/releases/{version}") if status == "success" else None
+    links = [l["url"] for l in (release or {}).get("assets", {}).get("links", [])]
+    if release and not any(sha in u for u in links):
+        return "release bez paczki z tego commita", release["_links"]["self"], pipe_url
+    return status, (release or {}).get("_links", {}).get("self"), pipe_url
+
+
+def _print_tag_result(project_name, version, sha, release_url, pipe_url, tickets):
+    color = _project_color(project_name)
+    print(f'\n  {_G}{_B}✓ Gotowe{_X}\n')
+    sep = '─' * 60
+    zadania = ", ".join(tickets) or "brak numerów SAN w merge'ach"
+    print(f'  {color}{_B}{sep}{_X}')
+    print(f"*{project_name.upper()} {version}* wydane z {sha[:8]}\n"
+          f"Release: {release_url}\n"
+          f"Pipeline: {pipe_url}\n"
+          f"Zadania: {zadania}\n"
+          f"Paczka wydana w GitLabie. Wdrożenie na produkcyjną VM to osobny krok.")
+    print(f'  {color}{_B}{sep}{_X}\n')
+
+
+def run_tag_flow(project_name, flow, version=None, sleep=time.sleep):
+    project = PROJECTS[project_name]
+    path, namespace = project["path"], project["namespace"]
+    package = project.get("package", project_name)
+    source = FLOW_CONFIG[flow]["source"]
+
+    _print_header(project_name, flow)
+
+    with _Step("Pobieranie zmian i tagów z remote"):
+        subprocess.run(["git", "fetch", "origin", "--tags"], cwd=path, check=True, capture_output=True)
+
+    with _Step(f"Plan wydania z {source}") as step:
+        plan = tag_plan(project_name, flow)
+        if plan["commity"] == 0 or plan["ostatni_sha"] == plan["sha"]:
+            step.label = f"{source} bez zmian od {plan['ostatni']} — przerywam"
+            _print_no_changes(project_name, f"Brak zmian w {source} od {plan['ostatni']}")
+            sys.exit(1)
+        version = version or plan["proponowany"]
+        if plan["ostatni"] and _semver(version) <= _semver(plan["ostatni"]):
+            step.label = f"{version} nie jest wyższy niż {plan['ostatni']} — przerywam"
+            print(f"\n  {_R}{version} musi być wyższy niż ostatni tag {plan['ostatni']}{_X}", file=sys.stderr)
+            sys.exit(2)
+        step.label = f"{plan['ostatni'] or 'brak tagu'} → {version} na {plan['sha'][:8]} ({plan['commity']} commitów)"
+
+    with _Step("Sprawdzanie build:vm, paczki i uprawnień") as step:
+        problems = release_problems(namespace, package, source, plan["sha"])
+        if problems:
+            step.label = "Wydanie zablokowane — przerywam"
+            for p in problems:
+                print(f"  {_R}✗ {p}{_X}", file=sys.stderr)
+            sys.exit(2)
+        step.label = "build:vm, paczka i uprawnienia w porządku"
+
+    with _Step(f"Tworzenie tagu {version} na {plan['sha'][:8]}"):
+        # ref = SHA, nie nazwa gałęzi: merge, który wszedłby w międzyczasie, nie trafi do wydania bez sprawdzenia
+        _gitlab("POST", f"projects/{namespace.replace('/', '%2F')}/repository/tags",
+                json={"tag_name": version, "ref": plan["sha"]})
+
+    with _Step("Czekanie na release:vm") as step:
+        status, release_url, pipe_url = wait_for_release(namespace, version, plan["sha"], sleep=sleep)
+        step.label = f"release:vm: {status}"
+    if status != "success" or not release_url:
+        print(f"\n  {_R}Tag {version} założony, ale wydanie nie skończyło się sukcesem: {status}. "
+              f"Pipeline: {pipe_url}{_X}", file=sys.stderr)
+        sys.exit(2)
+
+    _print_tag_result(project_name, version, plan["sha"], release_url, pipe_url, plan["zadania"])
+    return release_url
+
+
 def main():
     args = parse_args()
-    if changelog_strategy(args.project) == "static":
+    if FLOW_CONFIG[args.flow]["typ"] == "tag":
+        if args.plan:
+            print(json.dumps(tag_plan(args.project, args.flow), ensure_ascii=False))
+        else:
+            run_tag_flow(args.project, args.flow, args.version)
+    elif changelog_strategy(args.project) == "static":
         run_static_flow(args.project, args.flow)
     elif FLOW_CONFIG[args.flow]["typ"] == "featurenotes":
         run_featurenotes_flow(args.project, args.flow)

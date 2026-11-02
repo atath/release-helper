@@ -249,7 +249,7 @@ def test_create_gitlab_mr_returns_url():
     mock_response.json.return_value = {"web_url": "https://git.sandis.io/sandis/jaguarapp-front/-/merge_requests/99"}
 
     with patch("release_helper.requests.post", return_value=mock_response):
-        with patch.dict(os.environ, {"GITLAB_TOKEN": "test-token"}):
+        with patch("release_helper._get_gitlab_token", return_value="test-token"):
             url = release_helper.create_gitlab_mr(
                 namespace="sandis/jaguarapp-front",
                 source_branch="release/sit-test-23042026",
@@ -261,8 +261,8 @@ def test_create_gitlab_mr_returns_url():
 
 
 def test_create_gitlab_mr_raises_on_missing_token():
-    with patch("release_helper._get_gitlab_token", side_effect=ValueError("GITLAB_TOKEN")):
-        with pytest.raises(ValueError, match="GITLAB_TOKEN"):
+    with patch("release_helper._get_gitlab_token", side_effect=ValueError("Brak tokenu GitLab")):
+        with pytest.raises(ValueError, match="Brak tokenu GitLab"):
             release_helper.create_gitlab_mr("ns/proj", "src", "tgt", "title", "desc")
 
 
@@ -273,7 +273,7 @@ def test_create_gitlab_mr_raises_on_api_error():
     mock_response.text = "Branch already exists"
 
     with patch("release_helper.requests.post", return_value=mock_response):
-        with patch.dict(os.environ, {"GITLAB_TOKEN": "test-token"}):
+        with patch("release_helper._get_gitlab_token", return_value="test-token"):
             with pytest.raises(RuntimeError, match="422"):
                 release_helper.create_gitlab_mr("ns/proj", "src", "tgt", "title", "desc")
 
@@ -390,17 +390,17 @@ def test_run_test_to_master_uses_iterator_on_existing_branch():
     mock_find.assert_called_once()
 
 
-# ── test-to-stage ──────────────────────────────────────────────────────────────
+# ── claims-front: test-to-master ───────────────────────────────────────────────
 
-def test_make_branch_name_test_to_stage():
+def test_make_branch_name_test_to_master():
     with patch("release_helper.datetime") as mock_dt:
         mock_dt.date.today.return_value.strftime.return_value = "23042026"
-        result = release_helper.make_branch_name("test-to-stage")
-    assert result == "release/test-stage-23042026"
+        result = release_helper.make_branch_name("test-to-master")
+    assert result == "release/test-master-23042026"
 
 
 def test_allowed_flows_reads_project_config():
-    assert release_helper.allowed_flows("claims-front") == ["sit-to-test", "test-to-stage"]
+    assert release_helper.allowed_flows("claims-front") == ["sit-to-test", "test-to-master", "master-to-tag"]
     assert release_helper.allowed_flows("jaguarapp-front") == ["sit-to-test", "test-to-master"]
 
 
@@ -409,14 +409,14 @@ def test_allowed_flows_falls_back_to_all_flows():
         assert release_helper.allowed_flows("legacy") == release_helper.FLOWS
 
 
-def test_parse_args_accepts_test_to_stage_for_claims_front():
-    args = release_helper.parse_args(["--project", "claims-front", "--flow", "test-to-stage"])
-    assert args.flow == "test-to-stage"
+def test_parse_args_accepts_test_to_master_for_claims_front():
+    args = release_helper.parse_args(["--project", "claims-front", "--flow", "test-to-master"])
+    assert args.flow == "test-to-master"
 
 
-def test_parse_args_rejects_test_to_master_for_claims_front():
+def test_parse_args_rejects_removed_test_to_stage_for_claims_front():
     with pytest.raises(SystemExit):
-        release_helper.parse_args(["--project", "claims-front", "--flow", "test-to-master"])
+        release_helper.parse_args(["--project", "claims-front", "--flow", "test-to-stage"])
 
 
 def test_parse_args_rejects_test_to_stage_for_jaguarapp_front():
@@ -424,7 +424,7 @@ def test_parse_args_rejects_test_to_stage_for_jaguarapp_front():
         release_helper.parse_args(["--project", "jaguarapp-front", "--flow", "test-to-stage"])
 
 
-def test_run_test_to_stage_full_flow():
+def test_run_test_to_master_claims_front_full_flow():
     with patch("release_helper.subprocess.run"), \
          patch("release_helper.has_branch_diff", return_value=True), \
          patch("release_helper.has_content_diff", return_value=True), \
@@ -434,18 +434,18 @@ def test_run_test_to_stage_full_flow():
          patch("release_helper.commit_release"), \
          patch("release_helper.push_branch"), \
          patch("release_helper.create_gitlab_mr", return_value="https://git.sandis.io/mr/3") as mock_mr:
-        url = release_helper.run_test_to_stage("claims-front")
+        url = release_helper.run_test_to_master("claims-front")
 
     assert url == "https://git.sandis.io/mr/3"
     targets = [c[1]["target_branch"] for c in mock_mr.call_args_list]
-    assert targets == ["stage", "test", "sit"]
+    assert targets == ["master", "test", "sit"]
     titles = [c[1]["title"] for c in mock_mr.call_args_list]
-    assert titles[0] == "claims-front Release test -> stage v0.2.0"
+    assert titles[0] == "claims-front Release test -> master v0.2.0"
     assert titles[1] == "claims-front Release test -> test v0.2.0"
     assert titles[2] == "claims-front Release test -> sit v0.2.0"
 
 
-def test_run_test_to_stage_branches_off_test():
+def test_run_test_to_master_claims_front_branches_off_test():
     with patch("release_helper.subprocess.run"), \
          patch("release_helper.has_branch_diff", return_value=True) as mock_diff, \
          patch("release_helper.has_content_diff", return_value=True), \
@@ -455,45 +455,45 @@ def test_run_test_to_stage_branches_off_test():
          patch("release_helper.commit_release"), \
          patch("release_helper.push_branch"), \
          patch("release_helper.create_gitlab_mr", return_value="https://git.sandis.io/mr/3"):
-        release_helper.run_test_to_stage("claims-front")
+        release_helper.run_test_to_master("claims-front")
 
-    assert mock_diff.call_args[0][1:] == ("test", "stage")
+    assert mock_diff.call_args[0][1:] == ("test", "master")
     assert mock_create.call_args[0][1] == "test"
 
 
-def test_run_test_to_stage_aborts_on_no_diff():
+def test_run_test_to_master_claims_front_aborts_on_no_diff():
     with patch("release_helper.subprocess.run"), \
          patch("release_helper.has_branch_diff", return_value=False):
         with pytest.raises(SystemExit):
-            release_helper.run_test_to_stage("claims-front")
+            release_helper.run_test_to_master("claims-front")
 
 
-def test_run_test_to_stage_aborts_on_no_content_diff():
+def test_run_test_to_master_claims_front_aborts_on_no_content_diff():
     with patch("release_helper.subprocess.run"), \
          patch("release_helper.has_branch_diff", return_value=True), \
          patch("release_helper.has_content_diff", return_value=False):
         with pytest.raises(SystemExit):
-            release_helper.run_test_to_stage("claims-front")
+            release_helper.run_test_to_master("claims-front")
 
 
-def test_run_test_to_stage_uses_iterator_on_existing_branch():
+def test_run_test_to_master_claims_front_uses_iterator_on_existing_branch():
     with patch("release_helper.subprocess.run"), \
          patch("release_helper.has_branch_diff", return_value=True), \
          patch("release_helper.has_content_diff", return_value=True), \
          patch("release_helper.find_available_branch_name",
-               return_value="release/test-stage-23042026-2") as mock_find, \
+               return_value="release/test-master-23042026-2") as mock_find, \
          patch("release_helper.create_release_branch"), \
          patch("release_helper.run_clg", return_value=("0.2.0", "content")), \
          patch("release_helper.commit_release"), \
          patch("release_helper.push_branch"), \
          patch("release_helper.create_gitlab_mr", return_value="https://git.sandis.io/mr/3"):
-        release_helper.run_test_to_stage("claims-front")
+        release_helper.run_test_to_master("claims-front")
     mock_find.assert_called_once()
 
 
 def test_print_header_derives_arrow_from_flow_config(capsys):
-    release_helper._print_header("claims-front", "test-to-stage")
-    assert "test → stage" in capsys.readouterr().out
+    release_helper._print_header("claims-front", "test-to-master")
+    assert "test → master" in capsys.readouterr().out
 
 
 # ── pelicanapp: statyczny CHANGELOG.md ─────────────────────────────────────────
@@ -710,7 +710,7 @@ def test_create_gitlab_mr_raises_merge_request_exists_on_409():
     )
 
     with patch("release_helper.requests.post", return_value=mock_response):
-        with patch.dict(os.environ, {"GITLAB_TOKEN": "test-token"}):
+        with patch("release_helper._get_gitlab_token", return_value="test-token"):
             with pytest.raises(release_helper.MergeRequestExistsError) as exc:
                 release_helper.create_gitlab_mr("sandis/pelicanapp", "sit", "test", "title", "desc")
 
@@ -724,7 +724,7 @@ def test_create_gitlab_mr_raises_runtime_error_on_409_without_iid():
     mock_response.text = '{"message":["Conflict"]}'
 
     with patch("release_helper.requests.post", return_value=mock_response):
-        with patch.dict(os.environ, {"GITLAB_TOKEN": "test-token"}):
+        with patch("release_helper._get_gitlab_token", return_value="test-token"):
             with pytest.raises(RuntimeError, match="409"):
                 release_helper.create_gitlab_mr("sandis/pelicanapp", "sit", "test", "title", "desc")
 
@@ -754,3 +754,119 @@ def test_main_keeps_featurenotes_flow_for_jaguarapp_front():
 
     mock_sit.assert_called_once_with("jaguarapp-front", "sit-to-test")
     mock_static.assert_not_called()
+
+
+def test_get_gitlab_token_ignores_env(tmp_path):
+    plik = tmp_path / "gitlab"
+    plik.write_text("z-pliku\n")
+    with patch("release_helper.GITLAB_TOKEN_FILE", str(plik)), \
+         patch.dict(os.environ, {"GITLAB_TOKEN": "z-env"}):
+        assert release_helper._get_gitlab_token() == "z-pliku"
+
+
+def test_get_gitlab_token_raises_without_file(tmp_path):
+    with patch("release_helper.GITLAB_TOKEN_FILE", str(tmp_path / "brak")), \
+         patch.dict(os.environ, {"GITLAB_TOKEN": "z-env"}):
+        with pytest.raises(ValueError, match="Brak tokenu GitLab"):
+            release_helper._get_gitlab_token()
+
+
+# ── claims-front: master-to-tag (tag vX.Y.Z, release:vm w CI) ─────────────────
+
+SHA = "e1c9e188bc6990597ce592558c239d2195f6e2d6"
+PLAN = {"ostatni": "v0.9.0", "ostatni_sha": "6b385c1c" + "0" * 32, "sha": SHA, "commity": 5,
+        "merge": ["Merge branch 'hotfix/SAN-26383' into 'master'"], "zadania": ["SAN-26383"], "proponowany": "v0.9.1"}
+
+
+@pytest.mark.parametrize("last,merges,expected", [
+    ("v0.9.0", ["Merge branch 'hotfix/SAN-1' into 'master'", "Merge branch 'hotfix/SAN-2-x' into 'master'"], "v0.9.1"),
+    ("v0.9.0", ["Merge branch 'hotfix/SAN-1' into 'master'", "Merge branch 'release/test-master-01112026' into 'master'"], "v0.10.0"),
+    ("v1.2.3", [], "v1.3.0"),
+    (None, ["Merge branch 'feature/SAN-1' into 'master'"], "v0.1.0"),
+])
+def test_propose_version(last, merges, expected):
+    assert release_helper.propose_version(last, merges) == expected
+
+
+def test_parse_args_version_and_plan_only_for_tag_flow():
+    args = release_helper.parse_args(["--project", "claims-front", "--flow", "master-to-tag", "--version", "v0.9.1"])
+    assert args.version == "v0.9.1"
+    with pytest.raises(SystemExit):
+        release_helper.parse_args(["--project", "claims-front", "--flow", "test-to-master", "--version", "v0.9.1"])
+    with pytest.raises(SystemExit):
+        release_helper.parse_args(["--project", "claims-front", "--flow", "test-to-master", "--plan"])
+    with pytest.raises(SystemExit):
+        release_helper.parse_args(["--project", "claims-front", "--flow", "master-to-tag", "--version", "0.9.1"])
+
+
+def test_master_to_tag_only_for_claims_front():
+    with pytest.raises(SystemExit):
+        release_helper.parse_args(["--project", "jaguarapp-front", "--flow", "master-to-tag"])
+
+
+def _tag_flow(plan=PLAN, problems=(), wait=("success", "https://git.example/rel", "https://git.example/pipe"), version=None):
+    with patch("release_helper.subprocess.run"), \
+         patch("release_helper.tag_plan", return_value=dict(plan)), \
+         patch("release_helper.release_problems", return_value=list(problems)), \
+         patch("release_helper._gitlab") as gitlab, \
+         patch("release_helper.wait_for_release", return_value=wait):
+        try:
+            wynik = release_helper.run_tag_flow("claims-front", "master-to-tag", version)
+        except SystemExit as e:
+            return e.code, gitlab
+        return wynik, gitlab
+
+
+def test_run_tag_flow_tags_sha_not_branch_and_returns_release(capsys):
+    wynik, gitlab = _tag_flow()
+    assert wynik == "https://git.example/rel"
+    gitlab.assert_called_once_with("POST", "projects/sandis%2Fclaims-front/repository/tags",
+                                   json={"tag_name": "v0.9.1", "ref": SHA})
+    out = capsys.readouterr().out
+    assert "*CLAIMS-FRONT v0.9.1* wydane z e1c9e188" in out and "SAN-26383" in out
+
+
+def test_run_tag_flow_uses_given_version():
+    _, gitlab = _tag_flow(version="v0.10.0")
+    assert gitlab.call_args[1]["json"]["tag_name"] == "v0.10.0"
+
+
+def test_run_tag_flow_rejects_version_not_higher_than_last():
+    kod, gitlab = _tag_flow(version="v0.9.0")
+    assert kod == 2 and not gitlab.called
+
+
+def test_run_tag_flow_no_changes_exits_1():
+    kod, gitlab = _tag_flow(plan={**PLAN, "commity": 0})
+    assert kod == 1 and not gitlab.called
+
+
+def test_run_tag_flow_blocked_by_problems_does_not_tag():
+    kod, gitlab = _tag_flow(problems=["build:vm dla e1c9e188 jeszcze trwa"])
+    assert kod == 2 and not gitlab.called
+
+
+def test_run_tag_flow_failed_release_exits_2():
+    kod, gitlab = _tag_flow(wait=("failed", None, "https://git.example/pipe"))
+    assert kod == 2 and gitlab.called
+
+
+def test_wait_for_release_polls_until_job_finishes():
+    odpowiedzi = [
+        [{"id": 1, "web_url": "https://git.example/pipe"}], [{"name": "release:vm", "status": "running"}],
+        [{"id": 1, "web_url": "https://git.example/pipe"}], [{"name": "release:vm", "status": "success"}],
+        {"_links": {"self": "https://git.example/rel"},
+         "assets": {"links": [{"url": f"https://git.example/packages/claims-front/{SHA}/claims-front.tar.gz"}]}},
+    ]
+    sleeps = []
+    with patch("release_helper._gitlab", side_effect=odpowiedzi):
+        wynik = release_helper.wait_for_release("sandis/claims-front", "v0.9.1", SHA, sleep=sleeps.append)
+    assert wynik == ("success", "https://git.example/rel", "https://git.example/pipe")
+    assert sleeps == [release_helper.RELEASE_POLL_S]
+
+
+def test_wait_for_release_times_out():
+    with patch("release_helper._gitlab", return_value=[]):
+        status, rel, _ = release_helper.wait_for_release("sandis/claims-front", "v0.9.1", SHA, timeout=20, interval=10,
+                                                         sleep=lambda s: None)
+    assert rel is None and "po 0 min" in status

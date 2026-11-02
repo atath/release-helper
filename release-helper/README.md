@@ -1,7 +1,7 @@
 # release-helper
 
 Skrypt Pythona do automatycznego tworzenia Merge Requestów w GitLabie dla projektów Sandis.
-Obsługuje trzy przepływy: `sit → test`, `test → stage` oraz `test → master`.
+Obsługuje trzy przepływy: `sit → test`, `test → master` i `master → tag` (wydanie claims-front tagiem).
 
 ## Wymagania
 
@@ -14,13 +14,10 @@ Obsługuje trzy przepływy: `sit → test`, `test → stage` oraz `test → mast
 
 ### 1. Token GitLab
 
-Token można podać na dwa sposoby (skrypt sprawdza w tej kolejności):
+Skrypt czyta token tylko z pliku. Zmiennej `GITLAB_TOKEN` celowo nie obsługuje, bo zmienne
+środowiskowe przechodzą do procesów potomnych i łatwo trafiają do logów.
 
 ```bash
-# Zmienna środowiskowa:
-export GITLAB_TOKEN=twój_token
-
-# Lub plik (zalecane):
 mkdir -p ~/.config/tokens
 echo "twój_token" > ~/.config/tokens/gitlab
 chmod 600 ~/.config/tokens/gitlab
@@ -35,7 +32,9 @@ i leży w repozytorium.
 
 - `flows`: przepływy. Każdy ma `source`, `target`, `back_merge` i `typ`:
   - `featurenotes`: opis MR-a z nowych FeatureNotes, bez commita (dziś sit → test),
-  - `clg`: `CLG-fe.py` składa RelNote i podbija wersję, commit i MR-y back-merge (dziś test → stage, test → master).
+  - `clg`: `CLG-fe.py` składa RelNote i podbija wersję, commit i MR-y back-merge (dziś test → master),
+  - `tag`: tag `vX.Y.Z` na gałęzi źródłowej przez API, bez checkoutu i MR-ów (dziś master → tag w claims-front).
+    Projekt może podać `package`, gdy nazwa paczki z `build:vm` różni się od nazwy projektu.
 - `projects`: projekty z `path`, `namespace` i listą `flows`. `"changelog": "static"` oznacza statyczny
   `CHANGELOG.md` (pelicanapp). Brak `flows` znaczy „wszystkie przepływy".
 - Pole `opis` to komentarz dla człowieka, skrypt go nie czyta.
@@ -52,7 +51,7 @@ python release_helper.py --project <projekt> --flow <przepływ>
 ```
 
 **Projekty:** `jaguarapp-front`, `claims-front`, `d2c-front`, `pelicanapp`  
-**Przepływy:** `sit-to-test`, `test-to-stage`, `test-to-master`
+**Przepływy:** `sit-to-test`, `test-to-master`, `master-to-tag`
 
 Nie każdy przepływ działa w każdym projekcie — progresja gałęzi się różni:
 
@@ -60,18 +59,19 @@ Nie każdy przepływ działa w każdym projekcie — progresja gałęzi się ró
 |---|---|---|
 | `jaguarapp-front` | sit → test → master | `sit-to-test`, `test-to-master` |
 | `d2c-front` | sit → test → master | `sit-to-test`, `test-to-master` |
-| `claims-front` | sit → test → stage → prod | `sit-to-test`, `test-to-stage` |
+| `claims-front` | sit → test → master → tag | `sit-to-test`, `test-to-master`, `master-to-tag` |
 | `pelicanapp` | develop → sit → test → master | `sit-to-test`, `test-to-master` |
 
-W claims-front krok `stage → prod` robisz ręcznie w GitLabie, skrypt go nie obsługuje.
+W claims-front produkcja idzie z `master` od 30.10.2026 (wcześniej `stage` i `prod`). Wydanie na produkcję to tag `vX.Y.Z`
+na `master`: przepływ `master-to-tag` albo skill `wydaj-wersje-claims` w Claude Code.
 
 `pelicanapp` działa inaczej niż projekty frontendowe — patrz [Statyczny CHANGELOG.md](#statyczny-changelogmd).
 
 Wywołanie niedozwolonego przepływu kończy się błędem:
 
 ```
-release_helper.py: error: flow 'test-to-master' niedostępny dla claims-front
-(dozwolone: sit-to-test, test-to-stage)
+release_helper.py: error: flow 'test-to-master' niedostępny dla <projekt>
+(dozwolone: sit-to-test)
 ```
 
 ### Przykłady
@@ -79,7 +79,7 @@ release_helper.py: error: flow 'test-to-master' niedostępny dla claims-front
 ```bash
 python release_helper.py --project jaguarapp-front --flow sit-to-test
 python release_helper.py --project jaguarapp-front --flow test-to-master
-python release_helper.py --project claims-front --flow test-to-stage
+python release_helper.py --project claims-front --flow test-to-master
 python release_helper.py --project pelicanapp --flow test-to-master
 ```
 
@@ -137,16 +137,26 @@ więc branch release jest kopią `sit` — MR back-merge nie miałby czego wnie�
 
 Skrypt tworzy też MRy back-merge do `test` i `sit`, żeby niższe środowiska nie odstawały.
 
-### test → stage
+### master → tag
 
-Tylko `claims-front`. Przebieg identyczny jak `test → master`, inna gałąź docelowa:
+Tylko `claims-front`. Push na `master` uruchamia w CI `build:vm`, który wysyła paczkę o wersji równej SHA commita.
+Tag `vX.Y.Z` uruchamia `release:vm`: ten wydaje paczkę commita z tagu i sam zakłada GitLab Release.
 
-1. Sprawdza czy `test` ma commity i realne zmiany względem `stage` (jeśli nie — abort)
-2. Tworzy branch `release/test-stage-DDMMYYYY` (lub `-2`, `-3` jeśli już istnieje)
-3. Uruchamia `CLG-fe.py` — scala FeatureNotes w RelNote, bumps `package.json`
-4. Commituje wynik, pushuje branch i tworzy MRy do `stage`, `test` i `sit`
+```bash
+python release_helper.py --project claims-front --flow master-to-tag --plan            # JSON z planem, bez zapisu
+python release_helper.py --project claims-front --flow master-to-tag                   # numer z reguły
+python release_helper.py --project claims-front --flow master-to-tag --version v0.10.0
+```
 
-**Tytuł MRa:** `Release test -> stage vX.Y.Z`
+1. `git fetch origin --tags`, ostatni tag `vX.Y.Z` i SHA `origin/master` (bez zmian od tagu — abort, kod 1)
+2. Numer: same merge'e `hotfix/*` od ostatniego tagu dają patch, każdy inny merge minor. `--version` go nadpisuje,
+   ale musi być wyższy niż ostatni tag.
+3. Sprawdza w GitLabie `build:vm` dla SHA, paczkę dla SHA i rolę Maintainer (tagi `v*` są chronione). Problem — kod 2.
+4. Zakłada tag przez API na SHA, nie na nazwę gałęzi: merge, który wszedłby w międzyczasie, nie trafi do wydania.
+5. Czeka do 10 min na `release:vm` i sprawdza, że release ma paczkę z tego SHA.
+
+Release w GitLabie nie oznacza wdrożenia: wgranie paczki na produkcyjną VM to osobny, ręczny krok.
+Numeracja tagów jest osobną serią i nie wynika z `package.json` ani z `RelNotes/`.
 
 ## Statyczny CHANGELOG.md
 

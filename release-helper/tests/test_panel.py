@@ -52,7 +52,7 @@ def test_wiadomosc_bez_bloku_to_none():
 def test_panel_ma_wszystkie_projekty_z_konfiguracji():
     projekty = panel.projekty()
     assert "pelicanapp" in projekty
-    assert projekty["claims-front"] == ["sit-to-test", "test-to-stage"]
+    assert projekty["claims-front"] == ["sit-to-test", "test-to-master", "master-to-tag"]
 
 
 def test_projekt_statyczny_nie_jest_blokowany_przez_brudne_drzewo():
@@ -64,7 +64,7 @@ def test_projekt_statyczny_nie_jest_blokowany_przez_brudne_drzewo():
 
 @pytest.mark.parametrize("projekt,flow", [
     ("nieznany", "sit-to-test"),
-    ("claims-front", "test-to-master"),
+    ("claims-front", "test-to-stage"),
 ])
 def test_niedozwolona_para_jest_odrzucana(projekt, flow):
     with pytest.raises(ValueError):
@@ -163,7 +163,7 @@ def test_obcy_host_jest_odrzucany(serwer):
 
 def test_start_z_niedozwolona_para_to_400(serwer):
     kod, body = _zadanie(serwer, "/api/start", "POST",
-                         {"projekty": ["claims-front"], "flow": "test-to-master"},
+                         {"projekty": ["claims-front"], "flow": "test-to-stage"},
                          {"X-Token": "sekret", "Content-Type": "application/json"})
     assert kod == 400 and "claims-front" in body
 
