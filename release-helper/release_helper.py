@@ -18,7 +18,8 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.j
 # dodajesz samym wpisem w config.json, bez zmian w kodzie.
 #   featurenotes: opis MR-a z nowych FeatureNotes, bez commita (jak sit -> test)
 #   clg:          CLG-fe.py skleja RelNote i podbija wersje, commit + MR-y back-merge
-#   tag:          tag vX.Y.Z na gałęzi źródłowej przez API; release:vm w CI wydaje paczkę i zakłada release
+#   tag:          tag vX.Y.Z na gałęzi źródłowej przez API; release:vm w CI wydaje paczkę i zakłada release.
+#                 Numer = wersja z package.json na SHA źródła (ten sam, który ma RelNote).
 FLOW_TYPES = ("featurenotes", "clg", "tag")
 
 
@@ -705,8 +706,26 @@ def propose_version(last, merges):
     return f"v{ma}.{mi + 1}.0"
 
 
+def package_version(path, sha):
+    """Wersja z package.json w commicie `sha` jako vX.Y.Z albo None, gdy pliku nie ma albo wersja nie pasuje.
+
+    W claims-front numer wydania ustala CLG-fe.py (RelNote + package.json) przy test -> master, a build:vm
+    wpisuje go do paczki, Sentry i healthz, zanim powstanie tag. Tag musi więc ten numer powtórzyć.
+    """
+    try:
+        wersja = json.loads(_git_out(path, "show", f"{sha}:package.json")).get("version")
+    except (subprocess.CalledProcessError, ValueError, AttributeError):
+        return None
+    tag = f"v{wersja}"
+    return tag if _semver(tag) else None
+
+
 def tag_plan(project_name, flow):
-    """Plan wydania z lokalnych refów (bez fetch): ostatni tag, SHA źródła, commity i merge'e od tagu, propozycja."""
+    """Plan wydania z lokalnych refów (bez fetch): ostatni tag, SHA źródła, commity i merge'e od tagu, propozycja.
+
+    Propozycja to wersja z package.json na SHA źródła. Reguła hotfix/minor zostaje tylko jako zapas dla
+    repo bez package.json.
+    """
     path = PROJECTS[project_name]["path"]
     source = FLOW_CONFIG[flow]["source"]
     sha = _git_out(path, "rev-parse", f"origin/{source}")
@@ -715,8 +734,9 @@ def tag_plan(project_name, flow):
     commits = int(_git_out(path, "rev-list", "--count", zakres))
     merges = [m for m in _git_out(path, "log", "--first-parent", "--merges", "--format=%s", zakres).splitlines() if m]
     tickets = sorted(set(re.findall(r"SAN-\d+", " ".join(merges))), key=lambda t: int(t[4:]))
+    pakiet = package_version(path, sha)
     return {"ostatni": last, "ostatni_sha": last_sha, "sha": sha, "commity": commits, "merge": merges,
-            "zadania": tickets, "proponowany": propose_version(last, merges)}
+            "zadania": tickets, "wersja_pakietu": pakiet, "proponowany": pakiet or propose_version(last, merges)}
 
 
 def _gitlab(method, path, **kwargs):
@@ -811,9 +831,17 @@ def run_tag_flow(project_name, flow, version=None, sleep=time.sleep):
             _print_no_changes(project_name, f"Brak zmian w {source} od {plan['ostatni']}")
             sys.exit(1)
         version = version or plan["proponowany"]
+        pakiet = plan.get("wersja_pakietu")
+        if pakiet and version != pakiet:
+            step.label = f"{version} różni się od package.json ({pakiet}) — przerywam"
+            print(f"\n  {_R}Tag musi być równy wersji z package.json na {plan['sha'][:8]}: {pakiet}, nie {version}. "
+                  f"Numer zmienia się przez RelNote i package.json (test-to-master albo hotfix), nie przy tagu.{_X}",
+                  file=sys.stderr)
+            sys.exit(2)
         if plan["ostatni"] and _semver(version) <= _semver(plan["ostatni"]):
             step.label = f"{version} nie jest wyższy niż {plan['ostatni']} — przerywam"
-            print(f"\n  {_R}{version} musi być wyższy niż ostatni tag {plan['ostatni']}{_X}", file=sys.stderr)
+            podpowiedz = " Najpierw podbij wersję w RelNotes i package.json." if pakiet else ""
+            print(f"\n  {_R}{version} musi być wyższy niż ostatni tag {plan['ostatni']}.{podpowiedz}{_X}", file=sys.stderr)
             sys.exit(2)
         step.label = f"{plan['ostatni'] or 'brak tagu'} → {version} na {plan['sha'][:8]} ({plan['commity']} commitów)"
 

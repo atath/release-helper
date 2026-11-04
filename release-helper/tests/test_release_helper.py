@@ -836,6 +836,47 @@ def test_run_tag_flow_rejects_version_not_higher_than_last():
     assert kod == 2 and not gitlab.called
 
 
+def test_run_tag_flow_uses_package_json_version():
+    _, gitlab = _tag_flow(plan={**PLAN, "wersja_pakietu": "v0.9.1"})
+    assert gitlab.call_args[1]["json"]["tag_name"] == "v0.9.1"
+
+
+def test_run_tag_flow_rejects_version_other_than_package_json(capsys):
+    kod, gitlab = _tag_flow(plan={**PLAN, "wersja_pakietu": "v0.9.1"}, version="v0.10.0")
+    assert kod == 2 and not gitlab.called
+    assert "package.json" in capsys.readouterr().err
+
+
+def test_run_tag_flow_package_json_not_bumped_blocks_with_hint(capsys):
+    kod, gitlab = _tag_flow(plan={**PLAN, "wersja_pakietu": "v0.9.0", "proponowany": "v0.9.0"})
+    assert kod == 2 and not gitlab.called
+    assert "podbij wersję" in capsys.readouterr().err
+
+
+def _git_repo(tmp_path, package_json):
+    def git(*a):
+        subprocess.run(["git", *a], cwd=tmp_path, check=True, capture_output=True)
+    git("init", "-q")
+    if package_json is not None:
+        (tmp_path / "package.json").write_text(package_json)
+    (tmp_path / "plik").write_text("x")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True).stdout.strip()
+
+
+@pytest.mark.parametrize("package_json,expected", [
+    ('{"name": "frontend", "version": "1.0.1"}', "v1.0.1"),
+    ('{"name": "frontend", "version": "1.0.1-rc1"}', None),
+    ('{"name": "frontend"}', None),
+    ("nie json", None),
+    (None, None),
+])
+def test_package_version(tmp_path, package_json, expected):
+    sha = _git_repo(tmp_path, package_json)
+    assert release_helper.package_version(str(tmp_path), sha) == expected
+
+
 def test_run_tag_flow_no_changes_exits_1():
     kod, gitlab = _tag_flow(plan={**PLAN, "commity": 0})
     assert kod == 1 and not gitlab.called
