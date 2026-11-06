@@ -720,6 +720,27 @@ def package_version(path, sha):
     return tag if _semver(tag) else None
 
 
+def release_notes(path, sha, version):
+    """Cały plik RelNotes/X.Y.Z.md z commita `sha` albo None, gdy pliku nie ma.
+
+    W claims-front plik pisze CLG-fe.py przy test -> master, release:vm (ci-package-promote) zostawia
+    opis release'u pusty, więc helper bierze notatki stąd.
+    """
+    try:
+        tresc = _git_out(path, "show", f"{sha}:RelNotes/{version.lstrip('v')}.md")
+    except subprocess.CalledProcessError:
+        return None
+    return tresc or None
+
+
+def _release_description(notes):
+    """RelNote bez tytułu z datą (`X.Y.Z - dd.mm.rrrr` + `===`), bo nazwę i datę release ma już w GitLabie."""
+    linie = notes.splitlines()
+    if len(linie) > 1 and re.fullmatch(r"=+", linie[1].strip()):
+        linie = linie[2:]
+    return "\n".join(l.rstrip() for l in linie).strip()
+
+
 def tag_plan(project_name, flow):
     """Plan wydania z lokalnych refów (bez fetch): ostatni tag, SHA źródła, commity i merge'e od tagu, propozycja.
 
@@ -799,17 +820,18 @@ def wait_for_release(namespace, version, sha, timeout=RELEASE_WAIT_S, interval=R
     return status, (release or {}).get("_links", {}).get("self"), pipe_url
 
 
-def _print_tag_result(project_name, version, sha, release_url, pipe_url, tickets):
+def _print_tag_result(project_name, version, last, sha, release_url, tickets, notes):
     color = _project_color(project_name)
     print(f'\n  {_G}{_B}✓ Gotowe{_X}\n')
     sep = '─' * 60
-    zadania = ", ".join(tickets) or "brak numerów SAN w merge'ach"
+    wersje = f"{last} → {version}" if last else version
+    if notes:
+        szczegoly = f"\n\nChangelog:\n```\n{notes}\n```"
+    else:
+        szczegoly = f"\nZadania: {', '.join(tickets)}" if tickets else ""
     print(f'  {color}{_B}{sep}{_X}')
-    print(f"*{project_name.upper()} {version}* wydane z {sha[:8]}\n"
-          f"Release: {release_url}\n"
-          f"Pipeline: {pipe_url}\n"
-          f"Zadania: {zadania}\n"
-          f"Paczka wydana w GitLabie. Wdrożenie na produkcyjną VM to osobny krok.")
+    print(f"*{project_name.upper()} {wersje}* wydane z {sha[:8]}\n"
+          f"Release: {release_url}{szczegoly}")
     print(f'  {color}{_B}{sep}{_X}\n')
 
 
@@ -867,7 +889,14 @@ def run_tag_flow(project_name, flow, version=None, sleep=time.sleep):
               f"Pipeline: {pipe_url}{_X}", file=sys.stderr)
         sys.exit(2)
 
-    _print_tag_result(project_name, version, plan["sha"], release_url, pipe_url, plan["zadania"])
+    notes = release_notes(path, plan["sha"], version)
+    if notes:
+        try:
+            _gitlab("PUT", f"projects/{namespace.replace('/', '%2F')}/releases/{version}", json={"description": _release_description(notes)})
+        except (RuntimeError, requests.RequestException) as e:
+            print(f"\n  {_Y}Release {version} jest, ale bez opisu z RelNotes: {e}{_X}", file=sys.stderr)
+
+    _print_tag_result(project_name, version, plan["ostatni"], plan["sha"], release_url, plan["zadania"], notes)
     return release_url
 
 

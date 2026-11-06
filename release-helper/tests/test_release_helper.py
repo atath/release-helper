@@ -804,11 +804,13 @@ def test_master_to_tag_only_for_claims_front():
         release_helper.parse_args(["--project", "jaguarapp-front", "--flow", "master-to-tag"])
 
 
-def _tag_flow(plan=PLAN, problems=(), wait=("success", "https://git.example/rel", "https://git.example/pipe"), version=None):
+def _tag_flow(plan=PLAN, problems=(), wait=("success", "https://git.example/rel", "https://git.example/pipe"), version=None,
+              notes=None, gitlab_error=None):
     with patch("release_helper.subprocess.run"), \
+         patch("release_helper.release_notes", return_value=notes), \
+         patch("release_helper._gitlab", side_effect=gitlab_error) as gitlab, \
          patch("release_helper.tag_plan", return_value=dict(plan)), \
          patch("release_helper.release_problems", return_value=list(problems)), \
-         patch("release_helper._gitlab") as gitlab, \
          patch("release_helper.wait_for_release", return_value=wait):
         try:
             wynik = release_helper.run_tag_flow("claims-front", "master-to-tag", version)
@@ -823,7 +825,51 @@ def test_run_tag_flow_tags_sha_not_branch_and_returns_release(capsys):
     gitlab.assert_called_once_with("POST", "projects/sandis%2Fclaims-front/repository/tags",
                                    json={"tag_name": "v0.9.1", "ref": SHA})
     out = capsys.readouterr().out
-    assert "*CLAIMS-FRONT v0.9.1* wydane z e1c9e188" in out and "SAN-26383" in out
+    assert "*CLAIMS-FRONT v0.9.0 → v0.9.1* wydane z e1c9e188" in out and "Zadania: SAN-26383" in out
+    assert "Pipeline" not in out and "osobny krok" not in out
+
+
+NOTES = "1.1.0 - 06.11.2026\n====================\n\n### [Dodano]\n \n- SAN-26520: Blokowanie usuwania szablonu"
+
+
+def test_run_tag_flow_puts_relnotes_into_release_and_chat(capsys):
+    _, gitlab = _tag_flow(notes=NOTES)
+    gitlab.assert_called_with("PUT", "projects/sandis%2Fclaims-front/releases/v0.9.1",
+                              json={"description": "### [Dodano]\n\n- SAN-26520: Blokowanie usuwania szablonu"})
+    out = capsys.readouterr().out
+    assert f"Release: https://git.example/rel\n\nChangelog:\n```\n{NOTES}\n```" in out
+    assert "Zadania:" not in out
+
+
+def test_run_tag_flow_description_failure_still_finishes(capsys):
+    def gitlab(method, *a, **k):
+        if method == "PUT":
+            raise RuntimeError("GitLab API PUT: 403")
+    wynik, _ = _tag_flow(notes=NOTES, gitlab_error=gitlab)
+    assert wynik == "https://git.example/rel"
+    captured = capsys.readouterr()
+    assert "bez opisu z RelNotes" in captured.err and "Changelog:" in captured.out
+
+
+def test_run_tag_flow_without_relnotes_skips_description():
+    _, gitlab = _tag_flow(plan={**PLAN, "zadania": []})
+    assert all(c[0][0] != "PUT" for c in gitlab.call_args_list)
+
+
+def test_release_notes_reads_file_from_commit(tmp_path):
+    sha = _git_repo(tmp_path, None)
+    assert release_helper.release_notes(str(tmp_path), sha, "v1.1.0") is None
+    (tmp_path / "RelNotes").mkdir()
+    (tmp_path / "RelNotes" / "1.1.0.md").write_text(NOTES + "\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rn"], cwd=tmp_path, check=True)
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True).stdout.strip()
+    assert release_helper.release_notes(str(tmp_path), sha, "v1.1.0") == NOTES
+
+
+def test_release_description_strips_title():
+    assert release_helper._release_description(NOTES) == "### [Dodano]\n\n- SAN-26520: Blokowanie usuwania szablonu"
+    assert release_helper._release_description("### [Dodano]\n- SAN-1: X") == "### [Dodano]\n- SAN-1: X"
 
 
 def test_run_tag_flow_uses_given_version():
